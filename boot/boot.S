@@ -1,39 +1,51 @@
 /* Kuberve Bootloader for ARMv8-A (AArch64) */
-/* Загружается как ELF ядром или через UEFI */
+/* It is loaded as an ELF kernel or via UEFI. */
 
-.section .text.boot
+.section ".text.boot"
 .global _start
 
 _start:
-    /* Проверка, что мы на CPU0 (только один CPU при старте) */
-    mrs x1, mpidr_el1
-    and x1, x1, #0xFF
-    cbnz x1, hang
+    /* Save the x0 register! U-Boot passes a pointer to the Device Tree (DTB) in it. */
+    /* We will really need this address in the C code to read the configuration. */
+    mov     x19, x0 
 
-    /* Установка стека (нижние 16KB зарезервированы под stack) */
-    ldr x1, =_stack_top
-    mov sp, x1
+    /* Switching from EL2 to EL1 */
+    mrs     x0, CurrentEL
+    and     x0, x0, #12
+    cmp     x0, #8
+    b.ne    .L_in_el1
 
-    /* Очистка BSS */
-    ldr x1, =__bss_start
-    ldr x2, =__bss_end
-    bss_loop:
-        cmp x1, x2
-        b.hs bss_done
-        str xzr, [x1], #8
-        b bss_loop
-    bss_done:
+    mov     x0, #(1 << 31) // RW=1 (64‑bit mode for EL1)
+    msr     hcr_el2, x0
 
-    /* Переход к ядру на C */
-    bl kernel_main
+    mov     x0, #0x3c5     // We are masking interrupts, EL1h mode.
+    msr     spsr_el2, x0
 
-    /* Если вернулось — зависаем */
-hang:
-    wfi
-    b hang
+    adr     x0, .L_in_el1
+    msr     elr_el2, x0
+    eret
 
-.section .bss
-.align 12
-_stack_start:
-    .skip 16384
-_stack_top:
+.L_in_el1:
+    /* We initialize the stack pointer by taking the address from the linker script. */
+    ldr     x0, =_stack_top
+    mov     sp, x0
+
+    /* We zero out the .bss section (so that global variables in C are equal to 0). */
+    ldr     x0, =__bss_start
+    ldr     x1, =__bss_end
+.L_clear_bss:
+    cmp     x0, x1
+    b.ge    .L_bss_done
+    str     xzr, [x0], #8
+    b       .L_clear_bss
+
+.L_bss_done:
+    /* We pass the Device Tree address back as the first argument to the C function. */
+    mov     x0, x19 
+
+    /* We jump into the main C code of the operating system. */
+    bl      kernel_main
+
+    /* In case kernel_main returns control (which shouldn’t happen) */
+1:  wfi
+    b       1b

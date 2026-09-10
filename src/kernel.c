@@ -1,34 +1,44 @@
 /* Kuberve Microkernel — ARM64 */
 #include <stdint.h>
+#include "ivt/interrupts.h"
+#include "timer/timer.h"
+#include "drivers/uart/uart.h"
+#include "drivers/uart/printk.h"
+#include "mm/mmu.h"
 
-/* UART0 на Raspberry Pi 3/4 (PL011) */
-#define UART0_BASE 0x3F201000
-#define UART0_DR   *((volatile uint32_t *)(UART0_BASE))
-#define UART0_FR   *((volatile uint32_t *)(UART0_BASE + 0x18))
-#define UART0_FR_TX_FULL 0x20
+extern volatile uint64_t system_ticks;
 
-/* Отправка символа */
-void uart_putc(char c) {
-    while (UART0_FR & UART0_FR_TX_FULL);
-    UART0_DR = c;
-}
+void kernel_main(uint64_t dtb_address) {
 
-/* Отправка строки */
-void uart_puts(const char *s) {
-    while (*s) {
-        if (*s == '\n') uart_putc('\r');
-        uart_putc(*s++);
-    }
-}
-
-/* Точка входа из bootloader */
-void kernel_main(void) {
-    uart_puts("\n=== KUBERVE MICROKERNEL v0.1.0 ===\n");
-    uart_puts("Architecture: ARMv8-A (AArch64)\n");
-    uart_puts("Status: Running\n");
-    uart_puts("=================================\n");
+    printk("\n==================================\n");
+    printk("=== KUBERVE MICROKERNEL v0.1.0 ===\n");
+    printk("==================================\n");
+    printk("Architecture : ARMv8-A (AArch64)\n");
     
-    /* Бесконечный цикл */
+#ifdef TARGET_RADXA
+    printk("Target Board : Radxa Rock 5 ITX (RK3588)\n");
+#else
+    printk("Target Board : QEMU Virtual Machine (virt)\n");
+#endif
+
+    init_mmu();
+    printk("Memory : MMU Enabled. Data & Instruction Caches Active.\n");
+
+    init_interrupts(); 
+    printk("System : GICv3 and Architecture Timer Initialized.\n");
+
+    printk("Boot Pointer : Device Tree Blob loaded at %p\n", (void*)dtb_address);
+    printk("Kernel Status: %s (Core ID: %d)\n", "Running", 0);
+    printk("Test Numbers : Decimal: %d, Hex: 0x%x\n", 123456, 0xABCDEF);
+
+    printk("\nStatus : Running smoothly\n");
+    printk("==================================\n"); 
+    
+    printk("System Timer : %d Hz (1 tick = %d ms)\n", 1000, 1000 / 1000);
+    sleep(1000); // Задержка 1 секунда для демонстрации работы таймера
+    printk("System Timer : %d ticks since boot\n", system_ticks);
+
+    uint64_t last_tick = 0;
     while (1) {
         __asm__ volatile("wfi");
     }

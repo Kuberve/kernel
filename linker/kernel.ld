@@ -3,7 +3,8 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x80000; /* Загрузка по адресу 512KB */
+    /* Ядро загружается по физическому адресу 4 МБ в DRAM */
+    . = 0x40000000; 
 
     .text : {
         KEEP(*(.text.boot))
@@ -26,6 +27,7 @@ SECTIONS {
     }
 
     . = ALIGN(16);
+    . = . + 0x10000; 
     _stack_top = .;
 
     /DISCARD/ : {
@@ -34,4 +36,6 @@ SECTIONS {
         *(.note*)
         *(.eh_frame*)
     }
+
+    _end = .;
 }
