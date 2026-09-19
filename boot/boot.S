@@ -15,10 +15,16 @@ _start:
     cmp     x0, #8
     b.ne    .L_in_el1
 
-    mov     x0, #(1 << 31) // RW=1 (64‑bit mode for EL1)
+    // Настройка HCR_EL2:
+    // RW=1 (64-bit EL1)
+    // IMO=1 (Physical IRQs routed to EL1)
+    // FMO=1 (Physical FIQs routed to EL1)
+    mov     x0, #(1 << 31)
+    orr     x0, x0, #(1 << 5)
+    orr     x0, x0, #(1 << 4)
     msr     hcr_el2, x0
 
-    mov     x0, #0x3c5     // We are masking interrupts, EL1h mode.
+    mov     x0, #0x3c5     // SPSR: EL1h mode, interrupts masked
     msr     spsr_el2, x0
 
     adr     x0, .L_in_el1

@@ -27,7 +27,6 @@ SECTIONS {
     }
 
     . = ALIGN(16);
-    . = . + 0x10000; 
     _stack_top = .;
 
     /DISCARD/ : {
