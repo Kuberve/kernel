@@ -1,0 +1,16 @@
+[package]
+name = "kuberve"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kuberve"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+
+[profile.release]
+panic = "abort"
+opt-level = 2
