@@ -22,6 +22,7 @@ pub struct Thread {
     pub state: State,
     pub sleep_until: u64,
     pub priority: u8,
+    pub wait_ticks: u32,
     pub id: u32,
     pub name: &'static str,
 }
@@ -31,6 +32,7 @@ const EMPTY_THREAD: Thread = Thread {
     state: State::Dead,
     sleep_until: 0,
     priority: 0,
+    wait_ticks: 0,
     id: 0,
     name: "",
 };
@@ -79,6 +81,7 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
         state: State::Ready,
         sleep_until: 0,
         priority,
+        wait_ticks: 0,
         id: id as u32,
         name,
     };
@@ -90,24 +93,28 @@ fn pick_next(current: usize) -> usize {
     unsafe {
         if COUNT == 0 { return IDLE; }
 
-        // Найти максимальный приоритет среди Ready
-        let mut best_prio: u8 = 0;
+        // Эффективный приоритет = базовый + aging
+        let eff = |t: &Thread| -> u32 {
+            t.priority as u32 + (t.wait_ticks / 5)
+        };
+
+        // Максимальный эффективный приоритет среди Ready
+        let mut best_eff: u32 = 0;
         let mut any = false;
         for i in 0..COUNT {
             if THREADS[i].state == State::Ready {
                 any = true;
-                if THREADS[i].priority > best_prio {
-                    best_prio = THREADS[i].priority;
-                }
+                let e = eff(&THREADS[i]);
+                if e > best_eff { best_eff = e; }
             }
         }
         if !any { return IDLE; }
 
-        // RR среди Ready с best_prio, начиная с current+1
+        // RR среди Ready с best_eff, начиная с current+1
         let start = if current == IDLE { 0 } else { (current + 1) % COUNT };
         for i in 0..COUNT {
             let idx = (start + i) % COUNT;
-            if THREADS[idx].state == State::Ready && THREADS[idx].priority == best_prio {
+            if THREADS[idx].state == State::Ready && eff(&THREADS[idx]) == best_eff {
                 return idx;
             }
         }
@@ -116,7 +123,7 @@ fn pick_next(current: usize) -> usize {
 }
 
 pub unsafe fn on_tick(old_sp: u64) -> u64 {
-    // Сохранить контекст текущего
+    // 1. Сохранить текущий
     if CURRENT == IDLE {
         IDLE_SP = old_sp;
     } else {
@@ -126,7 +133,7 @@ pub unsafe fn on_tick(old_sp: u64) -> u64 {
         }
     }
 
-    // Просыпаем тех, чьё время пришло
+    // 2. Просыпаем тех, чьё время пришло
     for i in 0..COUNT {
         if THREADS[i].state == State::Sleeping && THREADS[i].sleep_until <= TICK {
             THREADS[i].state = State::Ready;
@@ -134,10 +141,20 @@ pub unsafe fn on_tick(old_sp: u64) -> u64 {
     }
     TICK += 1;
 
-    // Выбрать следующего
+    // 3. Выбрать следующего
     let next = pick_next(CURRENT);
     CURRENT = next;
 
+    // 4. Aging: тем, кто ждёт, +1 к wait_ticks; выбранному сброс
+    for i in 0..COUNT {
+        if THREADS[i].state == State::Ready && i != next {
+            THREADS[i].wait_ticks = THREADS[i].wait_ticks.saturating_add(1);
+        } else if i == next {
+            THREADS[i].wait_ticks = 0;
+        }
+    }
+
+    // 5. Вернуть SP того, кого запускать
     if next == IDLE {
         IDLE_SP
     } else {
@@ -178,4 +195,40 @@ pub fn exit() -> ! {
 
 pub fn tick_count() -> u64 {
     unsafe { TICK }
+}
+
+pub unsafe fn on_yield(old_sp: u64) -> u64 {
+    if COUNT == 0 { return old_sp; }
+
+    if CURRENT == IDLE {
+        IDLE_SP = old_sp;
+    } else {
+        THREADS[CURRENT].sp = old_sp;
+        if THREADS[CURRENT].state == State::Running {
+            THREADS[CURRENT].state = State::Ready;
+        }
+    }
+
+    let next = pick_next(CURRENT);
+    CURRENT = next;
+
+    for i in 0..COUNT {
+        if THREADS[i].state == State::Ready && i != next {
+            THREADS[i].wait_ticks = THREADS[i].wait_ticks.saturating_add(1);
+        } else if i == next {
+            THREADS[i].wait_ticks = 0;
+        }
+    }
+
+    if next == IDLE {
+        IDLE_SP
+    } else {
+        THREADS[next].state = State::Running;
+        THREADS[next].sp
+    }
+}
+
+/// Поток отдаёт CPU добровольно.
+pub fn yield_now() {
+    unsafe { asm!("svc #0"); }
 }
