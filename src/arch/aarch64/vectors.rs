@@ -1,4 +1,5 @@
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
+use crate::println;
 
 global_asm!(
     ".section .text.vectors",
@@ -6,25 +7,21 @@ global_asm!(
     ".global _vectors",
     "_vectors:",
 
-    // Current EL with SP_EL0
     ".balign 0x80", "b sync_handler",
     ".balign 0x80", "b irq_handler",
     ".balign 0x80", "b fiq_handler",
     ".balign 0x80", "b serr_handler",
 
-    // Current EL with SP_ELx
     ".balign 0x80", "b sync_handler",
     ".balign 0x80", "b irq_handler",
     ".balign 0x80", "b fiq_handler",
     ".balign 0x80", "b serr_handler",
 
-    // Lower EL, AArch64
     ".balign 0x80", "b sync_handler",
     ".balign 0x80", "b irq_handler",
     ".balign 0x80", "b fiq_handler",
     ".balign 0x80", "b serr_handler",
 
-    // Lower EL, AArch32
     ".balign 0x80", "b sync_handler",
     ".balign 0x80", "b irq_handler",
     ".balign 0x80", "b fiq_handler",
@@ -33,7 +30,7 @@ global_asm!(
     "sync_handler:",
     "fiq_handler:",
     "serr_handler:",
-    "  b rust_panic_handler",
+    "  b rust_exception_handler",
 
     "irq_handler:",
     "  msr daifset, #2",
@@ -83,72 +80,44 @@ extern "C" {
 
 pub fn init() {
     unsafe {
-        let vbar = &_vectors as *const _ as u64;
-        core::arch::asm!("msr vbar_el1, {}", in(reg) vbar);
-        let back: u64;
-        unsafe { core::arch::asm!("mrs {}, VBAR_EL1", out(reg) back) };
-        crate::uart::puts("VBAR_EL1=");
-        crate::uart::put_num(back);
-        crate::uart::puts("\n");
-        core::arch::asm!("isb");
+        let v = &_vectors as *const _ as u64;
+        asm!("msr VBAR_EL1, {}", in(reg) v);
+        asm!("isb");
     }
 }
 
 #[no_mangle]
-pub extern "C" fn rust_panic_handler() -> ! {
-    crate::uart::puts("\n!! EXCEPTION !!\n");
+pub extern "C" fn rust_exception_handler() -> ! {
+    let esr: u64; unsafe { asm!("mrs {}, ESR_EL1", out(reg) esr) };
+    let elr: u64; unsafe { asm!("mrs {}, ELR_EL1", out(reg) elr) };
+    let far: u64; unsafe { asm!("mrs {}, FAR_EL1", out(reg) far) };
+    let spsr: u64; unsafe { asm!("mrs {}, SPSR_EL1", out(reg) spsr) };
 
-    let esr: u64;
-    unsafe { core::arch::asm!("mrs {}, ESR_EL1", out(reg) esr) };
-    crate::uart::puts("ESR_EL1=");
-    crate::uart::put_num(esr);
-    crate::uart::puts("\n");
-
-    let elr: u64;
-    unsafe { core::arch::asm!("mrs {}, ELR_EL1", out(reg) elr) };
-    crate::uart::puts("ELR_EL1=");
-    crate::uart::put_num(elr);
-    crate::uart::puts("\n");
-
-    let far: u64;
-    unsafe { core::arch::asm!("mrs {}, FAR_EL1", out(reg) far) };
-    crate::uart::puts("FAR_EL1=");
-    crate::uart::put_num(far);
-    crate::uart::puts("\n");
-
-    let spsr: u64;
-    unsafe { core::arch::asm!("mrs {}, SPSR_EL1", out(reg) spsr) };
-    crate::uart::puts("SPSR_EL1=");
-    crate::uart::put_num(spsr);
-    crate::uart::puts("\n");
-
-    loop { unsafe { core::arch::asm!("wfe") } }
+    println!();
+    println!("!! EXCEPTION !!");
+    println!("  EC       = {:#x}", (esr >> 26) & 0x3F);
+    println!("  ESR_EL1  = {:#x}", esr);
+    println!("  ELR_EL1  = {:#x}", elr);
+    println!("  FAR_EL1  = {:#x}", far);
+    println!("  SPSR_EL1 = {:#x}", spsr);
+    println!("Halted.");
+    loop { unsafe { asm!("wfe") } }
 }
 
 #[no_mangle]
 pub extern "C" fn rust_irq_handler() {
-    // Acknowledge
     let iar: u64;
-    unsafe { core::arch::asm!("mrs {}, ICC_IAR1_EL1", out(reg) iar) };
+    unsafe { asm!("mrs {}, ICC_IAR1_EL1", out(reg) iar) };
     let intid = (iar & 0xFFFFFF) as u32;
 
     if intid >= 1020 {
-        // Spurious. НЕ пишем EOIR.
         return;
     }
 
-    crate::uart::puts("irq id=");
-    crate::uart::put_num(intid as u64);
-    crate::uart::puts("\n");
-
     match intid {
-        30 => crate::timer::tick(),        // PPI 30 — EL1 physical timer
-        _ => {
-            crate::uart::puts("irq ");
-            // опционально: печатать intid
-        }
+        30 => crate::timer::handle_irq(),
+        _ => {}
     }
 
-    // End of interrupt
-    unsafe { core::arch::asm!("msr ICC_EOIR1_EL1, {}", in(reg) iar) };
+    unsafe { asm!("msr ICC_EOIR1_EL1, {}", in(reg) iar) };
 }
