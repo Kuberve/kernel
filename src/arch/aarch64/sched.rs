@@ -21,6 +21,7 @@ pub struct Thread {
     pub sp: u64,
     pub state: State,
     pub sleep_until: u64,
+    pub priority: u8,
     pub id: u32,
     pub name: &'static str,
 }
@@ -29,6 +30,7 @@ const EMPTY_THREAD: Thread = Thread {
     sp: 0,
     state: State::Dead,
     sleep_until: 0,
+    priority: 0,
     id: 0,
     name: "",
 };
@@ -50,7 +52,7 @@ pub fn init() {
     }
 }
 
-pub unsafe fn spawn(name: &'static str, entry: extern "C" fn() -> !) {
+pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> !) {
     let id = COUNT;
     if id >= MAX_THREADS {
         println!("sched: max threads");
@@ -76,6 +78,7 @@ pub unsafe fn spawn(name: &'static str, entry: extern "C" fn() -> !) {
         sp,
         state: State::Ready,
         sleep_until: 0,
+        priority,
         id: id as u32,
         name,
     };
@@ -85,17 +88,26 @@ pub unsafe fn spawn(name: &'static str, entry: extern "C" fn() -> !) {
 
 fn pick_next(current: usize) -> usize {
     unsafe {
-        if COUNT == 0 {
-            return IDLE;
+        if COUNT == 0 { return IDLE; }
+
+        // Найти максимальный приоритет среди Ready
+        let mut best_prio: u8 = 0;
+        let mut any = false;
+        for i in 0..COUNT {
+            if THREADS[i].state == State::Ready {
+                any = true;
+                if THREADS[i].priority > best_prio {
+                    best_prio = THREADS[i].priority;
+                }
+            }
         }
-        let start = if current == IDLE {
-            0
-        } else {
-            (current + 1) % COUNT
-        };
+        if !any { return IDLE; }
+
+        // RR среди Ready с best_prio, начиная с current+1
+        let start = if current == IDLE { 0 } else { (current + 1) % COUNT };
         for i in 0..COUNT {
             let idx = (start + i) % COUNT;
-            if THREADS[idx].state == State::Ready {
+            if THREADS[idx].state == State::Ready && THREADS[idx].priority == best_prio {
                 return idx;
             }
         }

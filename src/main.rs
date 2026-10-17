@@ -34,21 +34,21 @@ fn read_vbar() -> u64 {
 }
 
 extern "C" fn thread_a() -> ! {
-    let mut n = 0u64;
-    loop {
-        n += 1;
-        println!("A {}", n);
+    for n in 1..=3 {
+        crate::println!("A {}", n);
         unsafe { sched::sleep(1) }
     }
+    crate::println!("A done");
+    sched::exit();
 }
 
 extern "C" fn thread_b() -> ! {
-    let mut n = 0u64;
-    loop {
-        n += 1;
-        println!("B {}", n);
-        unsafe { sched::sleep(3) }
+    for n in 1..=3 {
+        crate::println!("B {}", n);
+        unsafe { sched::sleep(1) }
     }
+    crate::println!("B done");
+    sched::exit();
 }
 
 #[no_mangle]
@@ -68,8 +68,8 @@ pub extern "C" fn kmain() -> ! {
 
     sched::init();
     unsafe {
-        sched::spawn("A", thread_a);
-        sched::spawn("B", thread_b);
+        sched::spawn("A", 1, thread_a);
+        sched::spawn("B", 3, thread_b);
     }
 
     timer::start(1);
