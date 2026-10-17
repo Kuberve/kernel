@@ -51,7 +51,17 @@ global_asm!(
     "  stp x28, x29, [sp, #-16]!",
     "  stp x30, xzr, [sp, #-16]!",
 
+    "  mrs x0, ELR_EL1",
+    "  mrs x1, SPSR_EL1",
+    "  stp x0, x1, [sp, #-16]!",
+
+    "  mov x0, sp",
     "  bl rust_irq_handler",
+    "  mov sp, x0",
+
+    "  ldp x0, x1, [sp], #16",
+    "  msr ELR_EL1, x0",
+    "  msr SPSR_EL1, x1",
 
     "  ldp x30, xzr, [sp], #16",
     "  ldp x28, x29, [sp], #16",
@@ -105,19 +115,21 @@ pub extern "C" fn rust_exception_handler() -> ! {
 }
 
 #[no_mangle]
-pub extern "C" fn rust_irq_handler() {
+pub unsafe extern "C" fn rust_irq_handler(old_sp: u64) -> u64 {
     let iar: u64;
-    unsafe { asm!("mrs {}, ICC_IAR1_EL1", out(reg) iar) };
+    asm!("mrs {}, ICC_IAR1_EL1", out(reg) iar);
     let intid = (iar & 0xFFFFFF) as u32;
 
     if intid >= 1020 {
-        return;
+        return old_sp;
     }
 
     match intid {
-        30 => crate::timer::handle_irq(),
+        30 => crate::arch::aarch64::timer::handle_irq(),
         _ => {}
     }
 
-    unsafe { asm!("msr ICC_EOIR1_EL1, {}", in(reg) iar) };
+    asm!("msr ICC_EOIR1_EL1, {}", in(reg) iar);
+
+    crate::arch::aarch64::sched::on_tick(old_sp)
 }

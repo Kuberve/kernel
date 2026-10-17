@@ -31,7 +31,6 @@ fn recharge() {
 }
 
 pub fn handle_irq() {
-    let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
-    println!("tick {}", n);
+    TICKS.fetch_add(1, Ordering::Relaxed);
     recharge();
 }
