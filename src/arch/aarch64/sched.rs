@@ -174,6 +174,7 @@ pub unsafe fn sleep(ticks: u64) {
 
     // Ждём, пока планировщик не сменит наш state на Ready
     loop {
+        asm!("msr daifclr, #2");
         asm!("wfe");
         if THREADS[me].state != State::Sleeping {
             return;
@@ -231,4 +232,45 @@ pub unsafe fn on_yield(old_sp: u64) -> u64 {
 /// Поток отдаёт CPU добровольно.
 pub fn yield_now() {
     unsafe { asm!("svc #0"); }
+}
+
+/// Layout сохранённого контекста на стеке.
+/// Соответствует порядку stp в sync_handler.
+/// sp+0 — ELR, sp+8 — SPSR, sp+16 — x30, ..., sp+256 — x0, sp+264 — x1.
+#[repr(C)]
+pub struct SavedCtx {
+    pub elr: u64,     // sp+0
+    pub spsr: u64,    // sp+8
+    pub x30: u64,     // sp+16
+    pub pad: u64,     // sp+24 (xzr)
+    pub x28: u64,
+    pub x29: u64,
+    pub x26: u64,
+    pub x27: u64,
+    pub x24: u64,
+    pub x25: u64,
+    pub x22: u64,
+    pub x23: u64,
+    pub x20: u64,
+    pub x21: u64,
+    pub x18: u64,
+    pub x19: u64,
+    pub x16: u64,
+    pub x17: u64,
+    pub x14: u64,
+    pub x15: u64,
+    pub x12: u64,
+    pub x13: u64,
+    pub x10: u64,
+    pub x11: u64,
+    pub x8: u64,      // sp+192
+    pub x9: u64,
+    pub x6: u64,
+    pub x7: u64,
+    pub x4: u64,
+    pub x5: u64,
+    pub x2: u64,
+    pub x3: u64,
+    pub x0: u64,      // sp+256
+    pub x1: u64,      // sp+264
 }

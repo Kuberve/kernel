@@ -5,3 +5,5 @@ pub mod gic;
 pub mod vectors;
 
 pub mod sched;
+
+pub mod syscall;

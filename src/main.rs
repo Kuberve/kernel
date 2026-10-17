@@ -34,20 +34,28 @@ fn read_vbar() -> u64 {
 }
 
 extern "C" fn thread_a() -> ! {
+    let msg = b"A via syscall\n";
     let mut n = 0u64;
     loop {
         n += 1;
-        println!("A {}", n);
-        sched::yield_now();
+        crate::arch::aarch64::syscall::sys_write(1, msg.as_ptr(), msg.len() as u64);
+        crate::arch::aarch64::syscall::sys_sleep(1);
+        if n == 3 {
+            crate::arch::aarch64::syscall::sys_exit(0);
+        }
     }
 }
 
 extern "C" fn thread_b() -> ! {
+    let msg = b"B via syscall\n";
     let mut n = 0u64;
     loop {
         n += 1;
-        println!("B {}", n);
-        sched::yield_now();
+        crate::arch::aarch64::syscall::sys_write(1, msg.as_ptr(), msg.len() as u64);
+        crate::arch::aarch64::syscall::sys_sleep(1);
+        if n == 3 {
+            crate::arch::aarch64::syscall::sys_exit(0);
+        }
     }
 }
 

@@ -29,8 +29,28 @@ global_asm!(
 
     "sync_handler:",
     "  msr daifset, #2",
+
+    // SIMD (q0..q31) — первыми, самое высокое место на стеке
+    "  stp q0, q1, [sp, #-32]!",
+    "  stp q2, q3, [sp, #-32]!",
+    "  stp q4, q5, [sp, #-32]!",
+    "  stp q6, q7, [sp, #-32]!",
+    "  stp q8, q9, [sp, #-32]!",
+    "  stp q10, q11, [sp, #-32]!",
+    "  stp q12, q13, [sp, #-32]!",
+    "  stp q14, q15, [sp, #-32]!",
+    "  stp q16, q17, [sp, #-32]!",
+    "  stp q18, q19, [sp, #-32]!",
+    "  stp q20, q21, [sp, #-32]!",
+    "  stp q22, q23, [sp, #-32]!",
+    "  stp q24, q25, [sp, #-32]!",
+    "  stp q26, q27, [sp, #-32]!",
+    "  stp q28, q29, [sp, #-32]!",
+    "  stp q30, q31, [sp, #-32]!",
+
+    // GPR (x0..x30) — сохраняются ПЕРЕД использованием x2/x3
     "  stp x0, x1, [sp, #-16]!",
-    "  stp x2, x3, [sp, #-16]!",
+    "  stp x2, x3, [sp, #-16]!",     // <- x2=len, x3=? сохраняются как есть
     "  stp x4, x5, [sp, #-16]!",
     "  stp x6, x7, [sp, #-16]!",
     "  stp x8, x9, [sp, #-16]!",
@@ -46,6 +66,7 @@ global_asm!(
     "  stp x28, x29, [sp, #-16]!",
     "  stp x30, xzr, [sp, #-16]!",
 
+    // ELR/SPSR
     "  mrs x0, ELR_EL1",
     "  mrs x1, SPSR_EL1",
     "  stp x0, x1, [sp, #-16]!",
@@ -54,6 +75,7 @@ global_asm!(
     "  bl rust_sync_handler",
     "  mov sp, x0",
 
+    // Restore в обратном порядке
     "  ldp x0, x1, [sp], #16",
     "  msr ELR_EL1, x0",
     "  msr SPSR_EL1, x1",
@@ -74,6 +96,23 @@ global_asm!(
     "  ldp x4, x5, [sp], #16",
     "  ldp x2, x3, [sp], #16",
     "  ldp x0, x1, [sp], #16",
+
+    "  ldp q30, q31, [sp], #32",
+    "  ldp q28, q29, [sp], #32",
+    "  ldp q26, q27, [sp], #32",
+    "  ldp q24, q25, [sp], #32",
+    "  ldp q22, q23, [sp], #32",
+    "  ldp q20, q21, [sp], #32",
+    "  ldp q18, q19, [sp], #32",
+    "  ldp q16, q17, [sp], #32",
+    "  ldp q14, q15, [sp], #32",
+    "  ldp q12, q13, [sp], #32",
+    "  ldp q10, q11, [sp], #32",
+    "  ldp q8, q9, [sp], #32",
+    "  ldp q6, q7, [sp], #32",
+    "  ldp q4, q5, [sp], #32",
+    "  ldp q2, q3, [sp], #32",
+    "  ldp q0, q1, [sp], #32",
 
     "  msr daifclr, #2",
     "  eret",
@@ -148,31 +187,42 @@ pub fn init() {
 
 #[no_mangle]
 pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
+    use crate::arch::aarch64::sched::SavedCtx;
+    use crate::arch::aarch64::{sched, syscall};
+
     let esr: u64;
     asm!("mrs {}, ESR_EL1", out(reg) esr);
     let ec = (esr >> 26) & 0x3F;
 
-    match ec {
-        0x15 => {
-            // SVC из AArch64. Номер syscall в ESR[15:0].
-            let svc_num = (esr & 0xFFFF) as u32;
-            match svc_num {
-                0 => {
-                    // yield: переключаемся как по тику
-                    return crate::arch::aarch64::sched::on_yield(old_sp);
-                }
-                _ => {
-                    println!("unknown svc {}", svc_num);
-                }
-            }
-        }
-        _ => {
-            println!("!! SYNC EXCEPTION !! EC={:#x} ESR={:#x}", ec, esr);
-            loop { asm!("wfe"); }
-        }
+    if ec != 0x15 {
+        crate::println!("!! sync exception EC={:#x} ESR={:#x}", ec, esr);
+        loop { asm!("wfe"); }
     }
 
-    old_sp
+    let ctx = &mut *(old_sp as *mut SavedCtx);
+    let num = ctx.x8;
+    let a0  = ctx.x0;
+    let a1  = ctx.x1;
+    let a2  = ctx.x2;
+
+    match num {
+        syscall::SYS_YIELD => sched::on_yield(old_sp),
+        syscall::SYS_WRITE => {
+            let n = syscall::write(a0, a1 as *const u8, a2);
+            ctx.x0 = n as u64;
+            old_sp
+        }
+        syscall::SYS_SLEEP => {
+            sched::sleep(a0);
+            old_sp
+        }
+        syscall::SYS_EXIT => sched::exit(),
+        _ => {
+            crate::println!("unknown syscall {}", num);
+            ctx.x0 = u64::MAX;
+            old_sp
+        }
+    }
 }
 
 #[no_mangle]
