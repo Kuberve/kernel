@@ -18,3 +18,21 @@ pub fn puts(s: &str) {
         putc(b);
     }
 }
+
+pub fn put_num(mut n: u64) {
+    if n == 0 {
+        putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut i = 0;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        putc(buf[i]);
+    }
+}
