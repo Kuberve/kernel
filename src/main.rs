@@ -38,6 +38,41 @@ fn read_vbar() -> u64 {
     v
 }
 
+global_asm!(
+    ".section .text",
+    ".global user_hello_start",
+    ".global user_hello_end",
+    "user_hello_start:",
+    "  mov x0, #1",           // fd = 1
+    "  adr x1, msg",          // buf
+    "  mov x2, #12",          // len = 12
+    "  mov x8, #1",           // SYS_WRITE
+    "  svc #0",
+    "  mov x0, #0",           // code = 0
+    "  mov x8, #2",           // SYS_EXIT
+    "  svc #0",
+    "  b .",                  // не достижимо
+    "msg:",
+    "  .ascii \"Hello, EL0!\\n\"",
+    "user_hello_end:",
+);
+
+extern "C" {
+    static user_hello_start: u8;
+    static user_hello_end: u8;
+}
+
+fn copy_user_hello() -> u64 {
+    let src = unsafe { &user_hello_start as *const _ as *const u8 };
+    let end = unsafe { &user_hello_end as *const _ as usize };
+    let len = end - src as usize;
+    let dst = 0x40400000u64 as *mut u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(src, dst, len);
+    }
+    len as u64
+}
+
 extern "C" fn thread_a() -> ! {
     let msg = b"A via syscall\n";
     let mut n = 0u64;
@@ -83,6 +118,10 @@ pub extern "C" fn kmain() -> ! {
     unsafe { crate::arch::aarch64::mmu::init(); }
     println!("MMU enabled.");
 
+    // Скопировать user_hello в user code region
+    let user_len = copy_user_hello();
+    println!("copied {} bytes to 0x40400000", user_len);
+
     extern "C" {
         static __kernel_end: u8;
     }
@@ -122,6 +161,7 @@ pub extern "C" fn kmain() -> ! {
     unsafe {
         sched::spawn("A", 1, thread_a);
         sched::spawn("B", 3, thread_b);
+        sched::spawn_el0("hello", 2, 0x40400000, 0x40700000);
     }
 
     timer::start(1);

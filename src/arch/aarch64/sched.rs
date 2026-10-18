@@ -19,6 +19,7 @@ pub enum State {
 #[derive(Clone, Copy)]
 pub struct Thread {
     pub sp: u64,
+    pub sp_el0: u64,
     pub state: State,
     pub sleep_until: u64,
     pub priority: u8,
@@ -29,6 +30,7 @@ pub struct Thread {
 
 const EMPTY_THREAD: Thread = Thread {
     sp: 0,
+    sp_el0: 0,
     state: State::Dead,
     sleep_until: 0,
     priority: 0,
@@ -78,6 +80,7 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
 
     THREADS[id] = Thread {
         sp,
+        sp_el0: 0,
         state: State::Ready,
         sleep_until: 0,
         priority,
@@ -87,6 +90,39 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
     };
 
     println!("spawned '{}' id={} sp={:#x}", name, id, sp);
+}
+
+pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) {
+    let id = COUNT;
+    if id >= MAX_THREADS {
+        println!("sched: max threads");
+        return;
+    }
+    COUNT += 1;
+
+    let top = (STACKS[id].as_ptr() as u64 + STACK_SIZE as u64) & !0xF;
+    let sp = top - CTX_SIZE;
+    let p = sp as *mut u64;
+    for i in 0..(CTX_SIZE / 8) {
+        core::ptr::write_volatile(p.add(i as usize), 0);
+    }
+
+    // SavedCtx: elr = entry (user code), spsr = 0x000 (EL0t, IRQ on)
+    core::ptr::write_volatile(p.add(0), entry);
+    core::ptr::write_volatile(p.add(1), 0x000u64);
+
+    THREADS[id] = Thread {
+        sp,
+        sp_el0: usp,
+        state: State::Ready,
+        sleep_until: 0,
+        priority,
+        wait_ticks: 0,
+        id: id as u32,
+        name,
+    };
+
+    println!("spawned '{}' (EL0) id={} ksp={:#x} usp={:#x}", name, id, sp, usp);
 }
 
 fn pick_next(current: usize) -> usize {
@@ -128,6 +164,9 @@ pub unsafe fn on_tick(old_sp: u64) -> u64 {
         IDLE_SP = old_sp;
     } else {
         THREADS[CURRENT].sp = old_sp;
+        let tmp: u64;
+        asm!("mrs {}, SP_EL0", out(reg) tmp);
+        THREADS[CURRENT].sp_el0 = tmp;
         if THREADS[CURRENT].state == State::Running {
             THREADS[CURRENT].state = State::Ready;
         }
@@ -159,6 +198,9 @@ pub unsafe fn on_tick(old_sp: u64) -> u64 {
         IDLE_SP
     } else {
         THREADS[next].state = State::Running;
+        if THREADS[next].sp_el0 != 0 {
+            asm!("msr SP_EL0, {}", in(reg) THREADS[next].sp_el0);
+        }
         THREADS[next].sp
     }
 }
@@ -190,7 +232,10 @@ pub fn exit() -> ! {
         }
     }
     loop {
-        unsafe { asm!("wfe") }
+        unsafe { 
+            asm!("msr daifclr, #2");
+            asm!("wfe") 
+        }
     }
 }
 
