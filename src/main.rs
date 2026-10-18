@@ -1,7 +1,12 @@
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 use core::arch::{asm, global_asm};
+
+mod allocator;
 
 mod arch;
 use crate::arch::aarch64::{gic, timer, vectors, sched};
@@ -96,6 +101,22 @@ pub extern "C" fn kmain() -> ! {
         let p3 = crate::arch::aarch64::phys::alloc_page().unwrap();
         println!("free+alloc: p3={:#x} (should == p1)", p3);
     }
+
+    {
+        use alloc::boxed::Box;
+        use alloc::vec::Vec;
+
+        let b = Box::new(42u64);
+        println!("Box: {}", *b);
+
+        let mut v: Vec<u32> = Vec::new();
+        for i in 0..10 { v.push(i * 10); }
+        println!("Vec len={} last={}", v.len(), v[v.len()-1]);
+
+        let s = alloc::format!("hello, {}!", 42);
+        println!("format: {}", s);
+    }
+    println!("heap OK");
 
     sched::init();
     unsafe {
