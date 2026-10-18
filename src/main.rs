@@ -43,17 +43,34 @@ global_asm!(
     ".global user_hello_start",
     ".global user_hello_end",
     "user_hello_start:",
+    // getpid
+    "  mov x8, #4",           // SYS_GETPID
+    "  svc #0",               // x0 = pid
+    // expected pid = 2 (hello = thread 2: A=0, B=1, hello=2)
+    "  cmp x0, #2",
+    "  b.ne .fail",
+    // success: write "OK\n"
     "  mov x0, #1",           // fd = 1
-    "  adr x1, msg",          // buf
-    "  mov x2, #12",          // len = 12
+    "  adr x1, msg_ok",
+    "  mov x2, #3",           // len = 3
     "  mov x8, #1",           // SYS_WRITE
     "  svc #0",
-    "  mov x0, #0",           // code = 0
+    "  b .done",
+    ".fail:",
+    "  mov x0, #1",
+    "  adr x1, msg_er",
+    "  mov x2, #3",
+    "  mov x8, #1",
+    "  svc #0",
+    ".done:",
+    "  mov x0, #0",
     "  mov x8, #2",           // SYS_EXIT
     "  svc #0",
-    "  b .",                  // не достижимо
-    "msg:",
-    "  .ascii \"Hello, EL0!\\n\"",
+    "  b .",
+    "msg_ok:",
+    "  .ascii \"OK\\n\"",
+    "msg_er:",
+    "  .ascii \"ER\\n\"",
     "user_hello_end:",
 );
 

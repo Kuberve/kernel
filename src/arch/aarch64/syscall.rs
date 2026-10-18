@@ -68,3 +68,18 @@ pub fn write(fd: u64, buf: *const u8, len: u64) -> i64 {
     }
     len as i64
 }
+
+// Возвращает PID текущего потока. Пока просто индекс в массиве THREADS.
+pub fn sys_getpid() -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!(
+            "mov x8, {n}",
+            "svc #0",
+            n = const SYS_GETPID,
+            lateout("x0") ret,
+            out("x8") _,
+        );
+    }
+    ret
+}

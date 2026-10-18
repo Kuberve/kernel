@@ -216,6 +216,10 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             sched::sleep(a0);
             old_sp
         }
+        syscall::SYS_GETPID => {
+            ctx.x0 = sched::current_pid();
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(),
         _ => {
             crate::println!("unknown syscall {}", num);

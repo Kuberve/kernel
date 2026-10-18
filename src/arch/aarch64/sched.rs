@@ -243,6 +243,12 @@ pub fn tick_count() -> u64 {
     unsafe { TICK }
 }
 
+pub fn current_pid() -> u64 {
+    unsafe {
+        if CURRENT == IDLE { 0 } else { CURRENT as u64 }
+    }
+}
+
 pub unsafe fn on_yield(old_sp: u64) -> u64 {
     if COUNT == 0 { return old_sp; }
 
