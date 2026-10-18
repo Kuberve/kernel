@@ -8,6 +8,7 @@ struct PageTable {
 
 static mut L0: PageTable = PageTable { entries: [0; 512] };
 static mut L1: PageTable = PageTable { entries: [0; 512] };
+static mut L2: PageTable = PageTable { entries: [0; 512] };
 
 // MAIR: Attr0 = Normal WB (0xFF), Attr1 = Device nGnRnE (0x00)
 const MAIR: u64 = 0xFF | (0x00 << 8);
@@ -45,21 +46,35 @@ pub unsafe fn init() {
     let l1_pa = l1 as *mut _ as u64;
     l0.entries[0] = l1_pa | 0b11;
 
-    // L1[0] = 1GB block at PA 0x00000000, device, no execute
+        // L1[0] = 1GB device
     l1.entries[0] = 0x00000000u64
-        | ATTR_DEVICE
-        | AF
-        | PXN
-        | UXN
-        | BLOCK;
+        | ATTR_DEVICE | AF | PXN | UXN | BLOCK;
 
-    // L1[1] = 1GB block at PA 0x40000000, normal RAM, kernel can execute
-    l1.entries[1] = 0x40000000u64
-        | ATTR_NORMAL
-        | AF
-        | SH_INNER
-        | UXN        // не даём исполнять из EL0 (пока не важно)
-        | BLOCK;
+    // L1[1] → L2
+    let l2 = &mut *core::ptr::addr_of_mut!(L2);
+    l1.entries[1] = l2 as *mut _ as u64 | 0b11;
+
+    // Kernel code (L2[0]): AP=00 (EL1 only), exec allowed
+    l2.entries[0] = 0x40000000u64
+        | ATTR_NORMAL | AF | SH_INNER | BLOCK;
+
+    // Kernel data/heap (L2[1]): AP=00, non-exec
+    l2.entries[1] = 0x40200000u64
+        | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
+
+    // User code (L2[2]): AP=01 (EL1+EL0), exec only for EL0
+    l2.entries[2] = 0x40400000u64
+        | ATTR_NORMAL | AF | SH_INNER | (1 << 6) | PXN | BLOCK;
+
+    // User data (L2[3]): AP=01, non-exec
+    l2.entries[3] = 0x40600000u64
+        | ATTR_NORMAL | AF | SH_INNER | (1 << 6) | UXN | PXN | BLOCK;
+
+    // Rest (L2[4..512]): identity, non-exec, EL1 only
+    for i in 4..512 {
+        let pa = 0x40000000u64 + (i as u64) * 0x200000;
+        l2.entries[i] = pa | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
+    }
 
     // Настройка регистров MMU
     asm!("msr mair_el1, {}", in(reg) MAIR);
