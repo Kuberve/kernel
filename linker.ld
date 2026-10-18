@@ -18,4 +18,7 @@ SECTIONS
     . = ALIGN(16);
     . += 0x10000;         /* 64 KiB стек */
     _stack_top = .;
+    
+    . = ALIGN(0x1000);
+    __kernel_end = .;
 }

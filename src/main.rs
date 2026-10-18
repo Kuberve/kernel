@@ -78,6 +78,25 @@ pub extern "C" fn kmain() -> ! {
     unsafe { crate::arch::aarch64::mmu::init(); }
     println!("MMU enabled.");
 
+    extern "C" {
+        static __kernel_end: u8;
+    }
+    let kernel_end = unsafe { &__kernel_end as *const _ as usize };
+    // QEMU virt: RAM 0x40000000 + 128MB (default -m). Если меняешь -m, поменяй здесь.
+    let ram_end = 0x40000000 + 128 * 1024 * 1024;
+    println!("phys: heap from {:#x} to {:#x}", kernel_end, ram_end);
+    unsafe { crate::arch::aarch64::phys::init(kernel_end, ram_end); }
+
+    // Тест
+    unsafe {
+        let p1 = crate::arch::aarch64::phys::alloc_page().unwrap();
+        let p2 = crate::arch::aarch64::phys::alloc_page().unwrap();
+        println!("alloc: p1={:#x} p2={:#x} diff={}", p1, p2, p2 - p1);
+        crate::arch::aarch64::phys::free_page(p1);
+        let p3 = crate::arch::aarch64::phys::alloc_page().unwrap();
+        println!("free+alloc: p3={:#x} (should == p1)", p3);
+    }
+
     sched::init();
     unsafe {
         sched::spawn("A", 1, thread_a);
