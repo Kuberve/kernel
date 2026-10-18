@@ -74,6 +74,10 @@ pub extern "C" fn kmain() -> ! {
     gic::init();
     timer::init();
 
+    println!("Enabling MMU...");
+    unsafe { crate::arch::aarch64::mmu::init(); }
+    println!("MMU enabled.");
+
     sched::init();
     unsafe {
         sched::spawn("A", 1, thread_a);
