@@ -234,6 +234,11 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             ctx.x0 = 0;
             old_sp
         }
+        syscall::SYS_IRQ_ACK => {
+            unsafe { crate::arch::aarch64::gic::enable_irq(a0 as u32); }
+            ctx.x0 = 0;
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(),
         _ => {
             crate::println!("unknown syscall {}", num);
@@ -273,6 +278,24 @@ pub unsafe extern "C" fn rust_irq_handler(old_sp: u64) -> u64 {
 
     match intid {
         30 => crate::arch::aarch64::timer::handle_irq(),
+        33 => {
+            // UART IRQ: disable, EOI, сообщение в uart_server (pid=2)
+            use crate::arch::aarch64::{gic, sched, ipc::Message};
+            unsafe {
+                gic::disable_irq(33);
+            }
+            // EOI делаем здесь, чтобы GIC не держал IRQ pending.
+            // User прочитает UART DR и вызовет sys_irq_ack(33).
+            unsafe {
+                asm!("msr ICC_EOIR1_EL1, {}", in(reg) iar);
+            }
+            let msg = Message {
+                tag: 2,   // 2 = IRQ
+                data: [33, 0, 0, 0, 0, 0, 0],
+            };
+            unsafe { sched::ipc_send(2, msg); }
+            return old_sp;
+        }
         _ => {}
     }
 

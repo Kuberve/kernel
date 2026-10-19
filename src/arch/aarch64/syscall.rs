@@ -9,6 +9,7 @@ pub const SYS_SLEEP: u64 = 3;
 pub const SYS_GETPID: u64 = 4;
 pub const SYS_SEND: u64 = 5;
 pub const SYS_RECV: u64 = 6;
+pub const SYS_IRQ_ACK: u64 = 7;
 
 /// Отдать CPU добровольно.
 pub fn sys_yield() {
@@ -116,4 +117,17 @@ pub fn sys_getpid() -> u64 {
         );
     }
     ret
+}
+
+// Подтвердить обработку IRQ. intid — номер прерывания.
+pub fn sys_irq_ack(intid: u64) {
+    unsafe {
+        asm!(
+            "mov x8, {n}",
+            "svc #0",
+            n = const SYS_IRQ_ACK,
+            inlateout("x0") intid => _,
+            out("x8") _,
+        );
+    }
 }

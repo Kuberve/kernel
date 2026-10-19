@@ -81,6 +81,7 @@ pub extern "C" fn kmain() -> ! {
 
     vectors::init();
     gic::init();
+    unsafe { gic::init_spi(33); }
     timer::init();
 
     println!("Enabling MMU...");

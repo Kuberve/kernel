@@ -46,3 +46,45 @@ pub fn init() {
         core::ptr::write_volatile(isenabler0, 1 << 30);
     }
 }
+
+/// Настроить SPI (Shared Peripheral Interrupt, INTID >= 32).
+/// Group 1 NS, priority 0xA0 (ниже таймера 0x00, т.е. таймер выигрывает).
+/// Не включает — включение через enable_irq отдельно.
+pub unsafe fn init_spi(intid: u32) {
+    assert!(intid >= 32 && intid < 1020);
+
+    let word = (intid / 32) as usize;
+    let bit = intid % 32;
+
+    // Group 1 NS
+    let grp = (GICD_BASE + 0x080 + word * 4) as *mut u32;
+    core::ptr::write_volatile(grp, core::ptr::read_volatile(grp) | (1 << bit));
+
+    // Priority (byte per intid)
+    let prio = (GICD_BASE + 0x400 + intid as usize) as *mut u8;
+    core::ptr::write_volatile(prio, 0xA0);
+
+    // По умолчанию disable, чтобы IRQ не приходил, пока user не готов
+    disable_irq(intid);
+
+    // Barrier
+    core::arch::asm!("dsb sy");
+}
+
+pub unsafe fn enable_irq(intid: u32) {
+    assert!(intid >= 32 && intid < 1020);
+    let word = (intid / 32) as usize;
+    let bit = intid % 32;
+    let reg = (GICD_BASE + 0x100 + word * 4) as *mut u32;
+    core::ptr::write_volatile(reg, 1 << bit);
+    core::arch::asm!("dsb sy");
+}
+
+pub unsafe fn disable_irq(intid: u32) {
+    assert!(intid >= 32 && intid < 1020);
+    let word = (intid / 32) as usize;
+    let bit = intid % 32;
+    let reg = (GICD_BASE + 0x180 + word * 4) as *mut u32;
+    core::ptr::write_volatile(reg, 1 << bit);
+    core::arch::asm!("dsb sy");
+}
