@@ -128,11 +128,12 @@ pub extern "C" fn kmain() -> ! {
     println!("heap OK");
 
     sched::init();
-        unsafe {
+    unsafe {
         sched::spawn("A", 1, thread_a);
-        sched::spawn("B", 3, thread_b);
-        sched::spawn_el0("user1", 2, user_entry, 0x40700000);   // pid=2, sender
-        sched::spawn_el0("user2", 2, user_entry, 0x40780000);   // pid=3, receiver
+        sched::spawn("B", 2, thread_b);           // понизили до 2, чтобы user получал CPU
+        sched::spawn_el0("uart",    2, user_entry, 0x40700000);
+        sched::spawn_el0("client1", 2, user_entry, 0x40780000);
+        sched::spawn_el0("client2", 2, user_entry, 0x407C0000);
     }
 
     timer::start(1);
