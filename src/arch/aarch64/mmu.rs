@@ -9,6 +9,7 @@ struct PageTable {
 static mut L0: PageTable = PageTable { entries: [0; 512] };
 static mut L1: PageTable = PageTable { entries: [0; 512] };
 static mut L2: PageTable = PageTable { entries: [0; 512] };
+static mut L2_DEV: PageTable = PageTable { entries: [0; 512] };
 
 // MAIR: Attr0 = Normal WB (0xFF), Attr1 = Device nGnRnE (0x00)
 const MAIR: u64 = 0xFF | (0x00 << 8);
@@ -46,9 +47,22 @@ pub unsafe fn init() {
     let l1_pa = l1 as *mut _ as u64;
     l0.entries[0] = l1_pa | 0b11;
 
-        // L1[0] = 1GB device
-    l1.entries[0] = 0x00000000u64
-        | ATTR_DEVICE | AF | PXN | UXN | BLOCK;
+    // L1[0] = 1GB device
+    // Device region: L1[0] → L2_DEV, для тонких permissions
+    let l2_dev = &mut *core::ptr::addr_of_mut!(L2_DEV);
+    l1.entries[0] = l2_dev as *mut _ as u64 | 0b11;
+
+    // Все device-блоки: AP=00 (EL1 only), non-exec
+    for i in 0..512 {
+        let pa = (i as u64) * 0x200000;
+        l2_dev.entries[i] = pa | ATTR_DEVICE | AF | PXN | UXN | BLOCK;
+    }
+
+    // UART at 0x09000000 (2MB region 0x09000000-0x091FFFFF)
+    // Index: 0x09000000 / 0x200000 = 72
+    // AP=01 (EL1+EL0), non-exec
+    l2_dev.entries[72] = 0x09000000u64
+        | ATTR_DEVICE | AF | (1 << 6) | PXN | UXN | BLOCK;
 
     // L1[1] → L2
     let l2 = &mut *core::ptr::addr_of_mut!(L2);
