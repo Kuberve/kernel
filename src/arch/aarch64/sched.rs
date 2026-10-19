@@ -3,7 +3,7 @@ use crate::println;
 use crate::arch::aarch64::ipc::{Queue, Message, EMPTY_QUEUE};
 
 pub const STACK_SIZE: usize = 64 * 1024;
-pub const MAX_THREADS: usize = 8;
+pub const MAX_THREADS: usize = 16;
 pub const IDLE: usize = usize::MAX;
 
 // Размер контекста: q0..q31 (512) + FPCR/FPSR (16) + ELR/SPSR (16) + 16 пар GPR (256) = 800
@@ -26,6 +26,7 @@ pub struct Thread {
     pub sleep_until: u64,
     pub priority: u8,
     pub wait_ticks: u32,
+    pub blocked_on_send: usize,
     pub id: u32,
     pub name: &'static str,
 }
@@ -37,6 +38,7 @@ const EMPTY_THREAD: Thread = Thread {
     sleep_until: 0,
     priority: 0,
     wait_ticks: 0,
+    blocked_on_send: usize::MAX,
     id: 0,
     name: "",
 };
@@ -91,6 +93,7 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
         sleep_until: 0,
         priority,
         wait_ticks: 0,
+        blocked_on_send: usize::MAX,
         id: id as u32,
         name,
     };
@@ -124,6 +127,7 @@ pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) 
         sleep_until: 0,
         priority,
         wait_ticks: 0,
+        blocked_on_send: usize::MAX,
         id: id as u32,
         name,
     };
@@ -230,17 +234,25 @@ pub unsafe fn sleep(ticks: u64) {
     }
 }
 
-/// Завершить текущий поток. Стек не освобождается (пока).
+/// Завершить текущий поток.
 pub fn exit() -> ! {
     unsafe {
         if CURRENT != IDLE {
-            THREADS[CURRENT].state = State::Dead;
+            let me = CURRENT;
+            THREADS[me].state = State::Dead;
+            QUEUES[me] = EMPTY_QUEUE;
+            // разбудить всех, кто ждал отправки к нам — они увидят Dead и вернут false
+            for i in 0..COUNT {
+                if THREADS[i].state == State::Blocked && THREADS[i].blocked_on_send == me {
+                    THREADS[i].state = State::Ready;
+                }
+            }
         }
     }
     loop {
-        unsafe { 
+        unsafe {
             asm!("msr daifclr, #2");
-            asm!("wfe") 
+            asm!("wfe");
         }
     }
 }
@@ -361,25 +373,53 @@ pub unsafe fn wake_thread(pid: usize) {
 /// Отправить сообщение. Не блокируется. Возвращает false, если очередь полна
 /// или получатель мёртв.
 pub unsafe fn ipc_send(target: usize, msg: Message) -> bool {
-    if target >= MAX_THREADS {
-        return false;
-    }
-    if THREADS[target].state == State::Dead {
-        return false;
-    }
-    if !QUEUES[target].push(msg) {
-        return false;
-    }
+    if target >= MAX_THREADS { return false; }
+    if THREADS[target].state == State::Dead { return false; }
+    if !QUEUES[target].push(msg) { return false; }
     wake_thread(target);
     true
 }
 
+pub unsafe fn ipc_send_blocking(target: usize, msg: Message) -> bool {
+    if target >= MAX_THREADS { return false; }
+    if THREADS[target].state == State::Dead { return false; }
+    loop {
+        if QUEUES[target].push(msg) {
+            wake_thread(target);
+            return true;
+        }
+        // Очередь полна: блокируемся, пока recv не освободит место
+        if CURRENT == IDLE { return false; }
+        THREADS[CURRENT].state = State::Blocked;
+        THREADS[CURRENT].blocked_on_send = target;
+        loop {
+            asm!("msr daifclr, #2");
+            asm!("wfe");
+            if THREADS[CURRENT].state != State::Blocked { break; }
+        }
+        THREADS[CURRENT].blocked_on_send = usize::MAX;
+        // target мог умереть, пока мы ждали
+        if THREADS[target].state == State::Dead { return false; }
+        // пытаемся снова
+    }
+}
+
+unsafe fn wake_one_sender(target: usize) {
+    for i in 0..COUNT {
+        if THREADS[i].state == State::Blocked && THREADS[i].blocked_on_send == target {
+            THREADS[i].state = State::Ready;
+            return;
+        }
+    }
+}
+
 /// Попытаться получить сообщение без блокировки.
 pub unsafe fn ipc_recv_nonblock() -> Option<Message> {
-    if CURRENT == IDLE {
-        return None;
-    }
-    QUEUES[CURRENT].pop()
+    if CURRENT == IDLE { return None; }
+    let m = QUEUES[CURRENT].pop()?;
+    // место освободилось — будим одного ожидающего отправителя
+    wake_one_sender(CURRENT);
+    Some(m)
 }
 
 /// Получить сообщение, блокируясь до прихода.

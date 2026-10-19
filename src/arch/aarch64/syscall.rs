@@ -10,6 +10,8 @@ pub const SYS_GETPID: u64 = 4;
 pub const SYS_SEND: u64 = 5;
 pub const SYS_RECV: u64 = 6;
 pub const SYS_IRQ_ACK: u64 = 7;
+pub const SYS_TRY_SEND: u64 = 8;
+pub const SYS_TRY_RECV: u64 = 9;
 
 /// Отдать CPU добровольно.
 pub fn sys_yield() {
@@ -130,4 +132,26 @@ pub fn sys_irq_ack(intid: u64) {
             out("x8") _,
         );
     }
+}
+
+pub fn sys_try_send(target: u64, msg: *const Message) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!("mov x8, {n}", "svc #0",
+            n = const SYS_TRY_SEND,
+            inlateout("x0") target => ret,
+            in("x1") msg, out("x8") _);
+    }
+    ret
+}
+
+pub fn sys_try_recv(msg: *mut Message) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!("mov x8, {n}", "svc #0",
+            n = const SYS_TRY_RECV,
+            inlateout("x0") msg as u64 => ret,
+            out("x8") _);
+    }
+    ret
 }

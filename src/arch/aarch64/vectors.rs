@@ -223,7 +223,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
         syscall::SYS_SEND => {
             let ptr = a1 as *const crate::arch::aarch64::ipc::Message;
             let msg = *ptr;
-            let ok = sched::ipc_send(a0 as usize, msg);
+            let ok = sched::ipc_send_blocking(a0 as usize, msg);
             ctx.x0 = if ok { 0 } else { u64::MAX };
             old_sp
         }
@@ -237,6 +237,21 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
         syscall::SYS_IRQ_ACK => {
             unsafe { crate::arch::aarch64::gic::enable_irq(a0 as u32); }
             ctx.x0 = 0;
+            old_sp
+        }
+        syscall::SYS_TRY_SEND => {
+            let ptr = a1 as *const crate::arch::aarch64::ipc::Message;
+            let msg = *ptr;
+            let ok = sched::ipc_send(a0 as usize, msg);  // non-blocking
+            ctx.x0 = if ok { 0 } else { u64::MAX };
+            old_sp
+        }
+        syscall::SYS_TRY_RECV => {
+            let ptr = a0 as *mut crate::arch::aarch64::ipc::Message;
+            match sched::ipc_recv_nonblock() {
+                Some(m) => { *ptr = m; ctx.x0 = 0; }
+                None => { ctx.x0 = u64::MAX; }
+            }
             old_sp
         }
         syscall::SYS_EXIT => sched::exit(),
