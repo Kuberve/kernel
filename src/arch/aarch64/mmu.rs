@@ -70,8 +70,12 @@ pub unsafe fn init() {
     l2.entries[3] = 0x40600000u64
         | ATTR_NORMAL | AF | SH_INNER | (1 << 6) | UXN | PXN | BLOCK;
 
-    // Rest (L2[4..512]): identity, non-exec, EL1 only
-    for i in 4..512 {
+        // User heap (L2[4]): AP=01, non-exec
+    l2.entries[4] = 0x40800000u64
+        | ATTR_NORMAL | AF | SH_INNER | (1 << 6) | UXN | PXN | BLOCK;
+
+    // Rest (L2[5..512]): identity, non-exec, EL1 only
+    for i in 5..512 {
         let pa = 0x40000000u64 + (i as u64) * 0x200000;
         l2.entries[i] = pa | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
     }
