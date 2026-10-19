@@ -1,5 +1,6 @@
 use core::arch::asm;
 use crate::println;
+use crate::arch::aarch64::ipc::{Queue, Message, EMPTY_QUEUE};
 
 pub const STACK_SIZE: usize = 64 * 1024;
 pub const MAX_THREADS: usize = 8;
@@ -13,6 +14,7 @@ pub enum State {
     Ready,
     Running,
     Sleeping,
+    Blocked,
     Dead,
 }
 
@@ -42,6 +44,7 @@ const EMPTY_THREAD: Thread = Thread {
 static mut THREADS: [Thread; MAX_THREADS] = [EMPTY_THREAD; MAX_THREADS];
 static mut STACKS: [[u8; STACK_SIZE]; MAX_THREADS] =
     [[0; STACK_SIZE]; MAX_THREADS];
+pub static mut QUEUES: [Queue; MAX_THREADS] = [EMPTY_QUEUE; MAX_THREADS];
 static mut COUNT: usize = 0;
 static mut CURRENT: usize = IDLE;
 static mut TICK: u64 = 0;
@@ -53,6 +56,9 @@ pub fn init() {
         CURRENT = IDLE;
         TICK = 0;
         IDLE_SP = 0;
+        for i in 0..MAX_THREADS {
+            QUEUES[i] = EMPTY_QUEUE;
+        }
     }
 }
 
@@ -324,4 +330,64 @@ pub struct SavedCtx {
     pub x3: u64,
     pub x0: u64,      // sp+256
     pub x1: u64,      // sp+264
+}
+
+/// Заблокировать текущий поток до прихода IPC-сообщения.
+/// Вызывается из sync_handler с замаскированным IRQ.
+pub unsafe fn block_on_ipc() {
+    if CURRENT == IDLE {
+        return;
+    }
+    THREADS[CURRENT].state = State::Blocked;
+    loop {
+        asm!("msr daifclr, #2");
+        asm!("wfe");
+        if THREADS[CURRENT].state != State::Blocked {
+            return;
+        }
+    }
+}
+
+/// Разбудить поток, если он Blocked. Если Ready/Running/Sleeping — ничего.
+pub unsafe fn wake_thread(pid: usize) {
+    if pid >= MAX_THREADS {
+        return;
+    }
+    if THREADS[pid].state == State::Blocked {
+        THREADS[pid].state = State::Ready;
+    }
+}
+
+/// Отправить сообщение. Не блокируется. Возвращает false, если очередь полна
+/// или получатель мёртв.
+pub unsafe fn ipc_send(target: usize, msg: Message) -> bool {
+    if target >= MAX_THREADS {
+        return false;
+    }
+    if THREADS[target].state == State::Dead {
+        return false;
+    }
+    if !QUEUES[target].push(msg) {
+        return false;
+    }
+    wake_thread(target);
+    true
+}
+
+/// Попытаться получить сообщение без блокировки.
+pub unsafe fn ipc_recv_nonblock() -> Option<Message> {
+    if CURRENT == IDLE {
+        return None;
+    }
+    QUEUES[CURRENT].pop()
+}
+
+/// Получить сообщение, блокируясь до прихода.
+pub unsafe fn ipc_recv_block() -> Message {
+    loop {
+        if let Some(m) = ipc_recv_nonblock() {
+            return m;
+        }
+        block_on_ipc();
+    }
 }

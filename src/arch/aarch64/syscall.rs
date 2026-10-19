@@ -1,4 +1,5 @@
 use core::arch::asm;
+use crate::arch::aarch64::ipc::Message;
 
 // Номера syscall'ов
 pub const SYS_YIELD: u64 = 0;
@@ -6,6 +7,8 @@ pub const SYS_WRITE: u64 = 1;
 pub const SYS_EXIT:  u64 = 2;
 pub const SYS_SLEEP: u64 = 3;
 pub const SYS_GETPID: u64 = 4;
+pub const SYS_SEND: u64 = 5;
+pub const SYS_RECV: u64 = 6;
 
 /// Отдать CPU добровольно.
 pub fn sys_yield() {
@@ -67,6 +70,37 @@ pub fn write(fd: u64, buf: *const u8, len: u64) -> i64 {
         crate::uart::putc(c);
     }
     len as i64
+}
+
+/// Отправить сообщение процессу target. Возвращает 0 или -1.
+pub fn sys_send(target: u64, msg: *const Message) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!(
+            "mov x8, {n}",
+            "svc #0",
+            n = const SYS_SEND,
+            inlateout("x0") target => ret,
+            in("x1") msg,
+            out("x8") _,
+        );
+    }
+    ret
+}
+
+/// Принять сообщение в msg. Блокируется, пока не придёт. Возвращает 0.
+pub fn sys_recv(msg: *mut Message) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!(
+            "mov x8, {n}",
+            "svc #0",
+            n = const SYS_RECV,
+            inlateout("x0") msg as u64 => ret,
+            out("x8") _,
+        );
+    }
+    ret
 }
 
 // Возвращает PID текущего потока. Пока просто индекс в массиве THREADS.

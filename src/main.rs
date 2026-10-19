@@ -128,10 +128,11 @@ pub extern "C" fn kmain() -> ! {
     println!("heap OK");
 
     sched::init();
-    unsafe {
+        unsafe {
         sched::spawn("A", 1, thread_a);
         sched::spawn("B", 3, thread_b);
-        sched::spawn_el0("user", 2, user_entry, 0x40700000);
+        sched::spawn_el0("user1", 2, user_entry, 0x40700000);   // pid=2, sender
+        sched::spawn_el0("user2", 2, user_entry, 0x40780000);   // pid=3, receiver
     }
 
     timer::start(1);

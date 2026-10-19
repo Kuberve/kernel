@@ -220,6 +220,20 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             ctx.x0 = sched::current_pid();
             old_sp
         }
+        syscall::SYS_SEND => {
+            let ptr = a1 as *const crate::arch::aarch64::ipc::Message;
+            let msg = *ptr;
+            let ok = sched::ipc_send(a0 as usize, msg);
+            ctx.x0 = if ok { 0 } else { u64::MAX };
+            old_sp
+        }
+        syscall::SYS_RECV => {
+            let msg = sched::ipc_recv_block();
+            let ptr = a0 as *mut crate::arch::aarch64::ipc::Message;
+            *ptr = msg;
+            ctx.x0 = 0;
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(),
         _ => {
             crate::println!("unknown syscall {}", num);
