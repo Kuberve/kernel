@@ -215,6 +215,30 @@ pub extern "C" fn kmain() -> ! {
                     println!("--- Root directory ---");
                     unsafe { fs.readdir(fs.root_cluster); }
                     println!("--- End of root ---");
+                    // --- Read HELLO.TXT ---
+                    println!("--- Reading HELLO.TXT ---");
+                    if let Some((cluster, size, is_dir)) = unsafe { fs.find_entry(fs.root_cluster, "HELLO.TXT") } {
+                        if is_dir {
+                            println!("HELLO.TXT is a directory?");
+                        } else {
+                            println!("HELLO.TXT: cluster={} size={}", cluster, size);
+                            let buf_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page for file") };
+                            unsafe { core::ptr::write_bytes(buf_pa as *mut u8, 0, 4096); }
+                            match unsafe { fs.read_file(cluster, size, buf_pa as u64) } {
+                                Some(n) => {
+                                    let bytes = unsafe { core::slice::from_raw_parts(buf_pa as *const u8, n) };
+                                    let s = core::str::from_utf8(bytes).unwrap_or("<binary>");
+                                    print!("HELLO.TXT content: '");
+                                    print!("{}", s);
+                                    println!("'");
+                                }
+                                None => println!("read_file failed"),
+                            }
+                        }
+                    } else {
+                        println!("HELLO.TXT not found");
+                    }
+                    println!("--- End ---");
                 }
                 Err(e) => {
                     println!("FAT32 mount failed: {:?}", e);

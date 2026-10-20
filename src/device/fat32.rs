@@ -217,4 +217,104 @@ impl Fat32 {
             cluster = self.next_cluster(cluster);
         }
     }
+
+    /// Найти entry по имени (8.3, case-insensitive) в директории `dir_cluster`.
+    /// Возвращает (first_cluster, size, is_dir).
+    pub unsafe fn find_entry(
+        &self,
+        dir_cluster: u32,
+        name: &str,
+    ) -> Option<(u32, u32, bool)> {
+        // Нормализовать в 8.3: "hello.txt" → "HELLO   TXT"
+        let mut target = [b' '; 11];
+        let bytes = name.as_bytes();
+        let mut i = 0;
+        let mut j = 0;
+        while i < bytes.len() && j < 8 {
+            let c = bytes[i];
+            if c == b'.' { break; }
+            target[j] = if c >= b'a' && c <= b'z' { c - 32 } else { c };
+            i += 1; j += 1;
+        }
+        // ext
+        while i < bytes.len() && bytes[i] != b'.' { i += 1; }
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            let mut k = 8;
+            while i < bytes.len() && k < 11 {
+                let c = bytes[i];
+                target[k] = if c >= b'a' && c <= b'z' { c - 32 } else { c };
+                i += 1; k += 1;
+            }
+        }
+
+        let mut cluster = dir_cluster;
+        while cluster >= 2 && cluster < 0x0FFFFFF8 {
+            let buf_pa = phys::alloc_page()?;
+            if !self.read_cluster(cluster, buf_pa as u64) {
+                return None;
+            }
+            let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+            let entries = cluster_size / 32;
+            let buf = core::slice::from_raw_parts(buf_pa as *const u8, cluster_size);
+
+            for e_idx in 0..entries {
+                let e = &buf[e_idx * 32..(e_idx + 1) * 32];
+                let first = e[0];
+                if first == 0x00 { return None; }
+                if first == 0xE5 { continue; }
+                let attr = e[11];
+                if attr == 0x0F { continue; }
+                if attr & 0x08 != 0 { continue; }
+
+                // Сравнить 11 байт name+ext
+                let mut matched = true;
+                for k in 0..11 {
+                    if e[k] != target[k] { matched = false; break; }
+                }
+                if matched {
+                    let hi = read_u16(e, 20) as u32;
+                    let lo = read_u16(e, 26) as u32;
+                    let file_cluster = (hi << 16) | lo;
+                    let size = read_u32(e, 28);
+                    let is_dir = attr & 0x10 != 0;
+                    return Some((file_cluster, size, is_dir));
+                }
+            }
+            cluster = self.next_cluster(cluster);
+        }
+        None
+    }
+
+    /// Прочитать файл целиком в буфер `out_pa` (должен быть >= size байт).
+    /// Возвращает реально прочитанное число байт.
+    pub unsafe fn read_file(
+        &self,
+        first_cluster: u32,
+        size: u32,
+        out_pa: u64,
+    ) -> Option<usize> {
+        if size == 0 { return Some(0); }
+        let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+        let mut cluster = first_cluster;
+        let mut written = 0usize;
+
+        let tmp_pa = phys::alloc_page()?;
+        let out = out_pa as *mut u8;
+
+        while cluster >= 2 && cluster < 0x0FFFFFF8 && written < size as usize {
+            if !self.read_cluster(cluster, tmp_pa as u64) {
+                return None;
+            }
+            let remain = size as usize - written;
+            let copy_n = if remain < cluster_size { remain } else { cluster_size };
+            let src = tmp_pa as *const u8;
+            for i in 0..copy_n {
+                core::ptr::write_volatile(out.add(written + i), core::ptr::read_volatile(src.add(i)));
+            }
+            written += copy_n;
+            cluster = self.next_cluster(cluster);
+        }
+        Some(written)
+    }
 }
