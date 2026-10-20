@@ -18,6 +18,7 @@ pub enum State {
     Dead,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct Thread {
     pub sp: u64,
@@ -127,7 +128,7 @@ pub unsafe fn spawn_el0(
     // Активировать AS, загрузить ELF по vaddr (0x40400000) — попадёт в свой code region
     crate::arch::aarch64::mmu::activate(&as_);
     crate::loader::load_elf(elf_bytes);
-    crate::arch::aarch64::mmu::activate(&BOOT_AS);
+    crate::arch::aarch64::mmu::activate(&*core::ptr::addr_of!(BOOT_AS));
 
     // Kernel stack (SP_EL1) — как раньше
     let top = (STACKS[id].as_ptr() as u64 + STACK_SIZE as u64) & !0xF;
@@ -281,6 +282,7 @@ pub fn exit() -> ! {
     }
 }
 
+#[allow(dead_code)]
 pub fn tick_count() -> u64 {
     unsafe { TICK }
 }
@@ -326,6 +328,7 @@ pub unsafe fn on_yield(old_sp: u64) -> u64 {
 }
 
 /// Поток отдаёт CPU добровольно.
+#[allow(dead_code)]
 pub fn yield_now() {
     unsafe { asm!("svc #0"); }
 }

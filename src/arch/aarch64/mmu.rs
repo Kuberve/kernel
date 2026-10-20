@@ -6,6 +6,7 @@ pub struct PageTable {
     entries: [u64; 512],
 }
 
+#[allow(dead_code)]
 pub const PAGE_SIZE: usize = 4096;
 
 #[derive(Clone, Copy)]

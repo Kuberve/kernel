@@ -16,6 +16,7 @@ pub const SYS_TRY_SEND: u64 = sys_num::TRY_SEND;
 pub const SYS_TRY_RECV: u64 = sys_num::TRY_RECV;
 
 /// Отдать CPU добровольно.
+#[allow(dead_code)]
 pub fn sys_yield() {
     unsafe {
         asm!("mov x8, {n}", "svc #0", n = const SYS_YIELD, out("x8") _, out("x0") _);
@@ -78,6 +79,7 @@ pub fn write(fd: u64, buf: *const u8, len: u64) -> i64 {
 }
 
 /// Отправить сообщение процессу target. Возвращает 0 или -1.
+#[allow(dead_code)]
 pub fn sys_send(target: u64, msg: *const Message) -> i64 {
     let ret: i64;
     unsafe {
@@ -94,6 +96,7 @@ pub fn sys_send(target: u64, msg: *const Message) -> i64 {
 }
 
 /// Принять сообщение в msg. Блокируется, пока не придёт. Возвращает 0.
+#[allow(dead_code)]
 pub fn sys_recv(msg: *mut Message) -> i64 {
     let ret: i64;
     unsafe {
@@ -109,6 +112,7 @@ pub fn sys_recv(msg: *mut Message) -> i64 {
 }
 
 // Возвращает PID текущего потока. Пока просто индекс в массиве THREADS.
+#[allow(dead_code)]
 pub fn sys_getpid() -> u64 {
     let ret: u64;
     unsafe {
@@ -124,6 +128,7 @@ pub fn sys_getpid() -> u64 {
 }
 
 // Подтвердить обработку IRQ. intid — номер прерывания.
+#[allow(dead_code)]
 pub fn sys_irq_ack(intid: u64) {
     unsafe {
         asm!(
@@ -136,6 +141,7 @@ pub fn sys_irq_ack(intid: u64) {
     }
 }
 
+#[allow(dead_code)]
 pub fn sys_try_send(target: u64, msg: *const Message) -> i64 {
     let ret: i64;
     unsafe {
@@ -147,6 +153,7 @@ pub fn sys_try_send(target: u64, msg: *const Message) -> i64 {
     ret
 }
 
+#[allow(dead_code)]
 pub fn sys_try_recv(msg: *mut Message) -> i64 {
     let ret: i64;
     unsafe {

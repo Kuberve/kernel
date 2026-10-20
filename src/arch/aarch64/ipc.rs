@@ -1,4 +1,5 @@
 pub use kuberve_abi::Message;
+#[allow(unused_imports)]
 pub use kuberve_abi::tags;
 
 pub const QUEUE_SIZE: usize = 8;
