@@ -236,3 +236,171 @@ pub unsafe fn identify_namespace(nvme: &mut Nvme, buf_pa: u64, nsid: u32) -> Opt
 
     Some(IdentifyNamespace { nsze, ncap, lbads })
 }
+
+// ============================================================
+// I/O queues
+// ============================================================
+
+static mut IO_SQ: *mut u8 = core::ptr::null_mut();
+static mut IO_CQ: *mut u8 = core::ptr::null_mut();
+
+const IO_QID: u32 = 1;
+const IO_Q_SIZE: u32 = 64;
+
+/// Создать I/O CQ (opcode 0x05) и I/O SQ (opcode 0x01) через admin команды.
+pub unsafe fn create_io_queues(nvme: &mut Nvme) -> bool {
+    let io_cq_pa = match phys::alloc_page() {
+        Some(p) => p,
+        None => return false,
+    };
+    let io_sq_pa = match phys::alloc_page() {
+        Some(p) => p,
+        None => return false,
+    };
+    core::ptr::write_bytes(io_cq_pa as *mut u8, 0, 4096);
+    core::ptr::write_bytes(io_sq_pa as *mut u8, 0, 4096);
+    IO_CQ = io_cq_pa as *mut u8;
+    IO_SQ = io_sq_pa as *mut u8;
+
+    // --- Create I/O CQ ---
+    let mut cmd = [0u32; 16];
+    cmd[0] = 0x05 | (3 << 16);  // opcode=0x05, CID=3
+    // dword 6-7: PRP1 = io_cq_pa
+    cmd[6] = io_cq_pa as u32;
+    cmd[7] = (io_cq_pa >> 32) as u32;
+    // dword 10: QID[15:0], QSIZE-1 [31:16]
+    cmd[10] = IO_QID | ((IO_Q_SIZE - 1) << 16);
+    // dword 11: PC=1 (physically contiguous), IEN=0 (no IRQ)
+    cmd[11] = 1;
+
+    let s = submit_admin(nvme, &cmd);
+    if s != 0 {
+        println!("NVMe: create io cq status={:#x}", s);
+        return false;
+    }
+    println!("NVMe: I/O CQ created (qid={}, size={})", IO_QID, IO_Q_SIZE);
+
+    // --- Create I/O SQ ---
+    let mut cmd = [0u32; 16];
+    cmd[0] = 0x01 | (4 << 16);  // opcode=0x01, CID=4
+    cmd[6] = io_sq_pa as u32;
+    cmd[7] = (io_sq_pa >> 32) as u32;
+    cmd[10] = IO_QID | ((IO_Q_SIZE - 1) << 16);
+    // dword 11: PC=1, QPRIO=0, CQID=1 (bits 31:16)
+    cmd[11] = 1 | (IO_QID << 16);
+
+    let s = submit_admin(nvme, &cmd);
+    if s != 0 {
+        println!("NVMe: create io sq status={:#x}", s);
+        return false;
+    }
+    println!("NVMe: I/O SQ created (qid={}, size={})", IO_QID, IO_Q_SIZE);
+
+    true
+}
+
+// --- I/O ring state ---
+static mut IO_SQ_TAIL: u32 = 0;
+static mut IO_CQ_HEAD: u32 = 0;
+static mut IO_CQ_PHASE: bool = true;
+
+fn io_doorbell_sq(nvme: &Nvme) -> usize {
+    let dstrd = ((read64(nvme.bar, REG_CAP) >> 32) & 0xF) as usize;
+    REG_DBS + ((IO_QID as usize) * 2) * (4 << dstrd)
+}
+
+fn io_doorbell_cq(nvme: &Nvme) -> usize {
+    let dstrd = ((read64(nvme.bar, REG_CAP) >> 32) & 0xF) as usize;
+    REG_DBS + ((IO_QID as usize) * 2 + 1) * (4 << dstrd)
+}
+
+/// Отправить I/O команду, дождаться завершения. Возвращает status code.
+pub unsafe fn submit_io(nvme: &Nvme, cmd: &[u32; 16]) -> u32 {
+    let sq = IO_SQ as *mut u32;
+    let tail_idx = (IO_SQ_TAIL % IO_Q_SIZE) as usize;
+    let entry = sq.add(tail_idx * 16);
+    for i in 0..16 {
+        core::ptr::write_volatile(entry.add(i), cmd[i]);
+    }
+
+    IO_SQ_TAIL = (IO_SQ_TAIL + 1) % IO_Q_SIZE;
+    write32(nvme.bar, io_doorbell_sq(nvme), IO_SQ_TAIL);
+
+    // Poll CQ
+    let cq = IO_CQ as *mut u32;
+    loop {
+        let head_idx = (IO_CQ_HEAD % IO_Q_SIZE) as usize;
+        let entry = cq.add(head_idx * 4);
+        let status_dw = core::ptr::read_volatile(entry.add(3));
+        let phase = ((status_dw >> 16) & 1) != 0;
+        if phase != IO_CQ_PHASE {
+            core::arch::asm!("yield", options(nostack, nomem));
+            continue;
+        }
+        let status_code = (status_dw >> 17) & 0x7FFF;
+        IO_CQ_HEAD = (IO_CQ_HEAD + 1) % IO_Q_SIZE;
+        if IO_CQ_HEAD == 0 {
+            IO_CQ_PHASE = !IO_CQ_PHASE;
+        }
+        write32(nvme.bar, io_doorbell_cq(nvme), IO_CQ_HEAD);
+        return status_code;
+    }
+}
+
+// ============================================================
+// Read / Write
+// ============================================================
+
+/// Прочитать `num_blocks` блоков с LBA `slba` в буфер `buf_pa`.
+/// `buf_pa` должен быть выровнен на 512 байт (на 4KB страницу — идеально).
+pub unsafe fn read_blocks(
+    nvme: &Nvme,
+    nsid: u32,
+    slba: u64,
+    num_blocks: u16,
+    buf_pa: u64,
+) -> bool {
+    let mut cmd = [0u32; 16];
+    cmd[0] = 0x02 | (10 << 16);  // opcode=0x02 Read, CID=10
+    cmd[1] = nsid;
+    // dword 6-7: PRP1
+    cmd[6] = buf_pa as u32;
+    cmd[7] = (buf_pa >> 32) as u32;
+    // dword 10-11: SLBA (64-bit)
+    cmd[10] = slba as u32;
+    cmd[11] = (slba >> 32) as u32;
+    // dword 12: NLB (bits 15:0) = num_blocks - 1
+    cmd[12] = (num_blocks as u32 - 1) & 0xFFFF;
+
+    let s = submit_io(nvme, &cmd);
+    if s != 0 {
+        println!("NVMe: read status={:#x}", s);
+        return false;
+    }
+    true
+}
+
+/// Записать `num_blocks` блоков с LBA `slba` из буфера `buf_pa`.
+pub unsafe fn write_blocks(
+    nvme: &Nvme,
+    nsid: u32,
+    slba: u64,
+    num_blocks: u16,
+    buf_pa: u64,
+) -> bool {
+    let mut cmd = [0u32; 16];
+    cmd[0] = 0x01 | (11 << 16);  // opcode=0x01 Write, CID=11
+    cmd[1] = nsid;
+    cmd[6] = buf_pa as u32;
+    cmd[7] = (buf_pa >> 32) as u32;
+    cmd[10] = slba as u32;
+    cmd[11] = (slba >> 32) as u32;
+    cmd[12] = (num_blocks as u32 - 1) & 0xFFFF;
+
+    let s = submit_io(nvme, &cmd);
+    if s != 0 {
+        println!("NVMe: write status={:#x}", s);
+        return false;
+    }
+    true
+}

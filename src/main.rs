@@ -152,6 +152,60 @@ pub extern "C" fn kmain() -> ! {
                 ns.nsze, ns.lbads, 1u64 << ns.lbads);
             println!("NVMe NS1: capacity = {} bytes", ns.nsze * (1u64 << ns.lbads));
         }
+
+        // --- I/O queues ---
+        if unsafe { device::nvme::create_io_queues(&mut nvme) } {
+            println!("NVMe: I/O queues ready");
+
+            // Read block 0
+            let io_buf_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page for io buf") };
+            unsafe { core::ptr::write_bytes(io_buf_pa as *mut u8, 0xCC, 4096); }
+
+            if unsafe { device::nvme::read_blocks(&nvme, 1, 0, 1, io_buf_pa as u64) } {
+                println!("NVMe: read block 0 OK");
+                // Вывести первые 32 байта в hex
+                let buf = io_buf_pa as *const u8;
+                print!("NVMe: block 0 = ");
+                for i in 0..32 {
+                    let b = unsafe { core::ptr::read_volatile(buf.add(i)) };
+                    print!("{:02x}", b);
+                }
+                println!();
+            } else {
+                println!("NVMe: read block 0 FAILED");
+            }
+
+            // --- Тест записи + чтения ---
+            let test_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page") };
+            let test_msg = b"Hello NVMe!";
+            unsafe {
+                core::ptr::write_bytes(test_pa as *mut u8, 0, 4096);
+                for i in 0..test_msg.len() {
+                    core::ptr::write_volatile((test_pa as *mut u8).add(i), test_msg[i]);
+                }
+            }
+            if unsafe { device::nvme::write_blocks(&nvme, 1, 100, 1, test_pa as u64) } {
+                println!("NVMe: write block 100 OK");
+            } else {
+                println!("NVMe: write block 100 FAILED");
+            }
+
+            // Read back
+            unsafe { core::ptr::write_bytes(io_buf_pa as *mut u8, 0, 4096); }
+            if unsafe { device::nvme::read_blocks(&nvme, 1, 100, 1, io_buf_pa as u64) } {
+                let buf = io_buf_pa as *const u8;
+                let mut ok = true;
+                for i in 0..test_msg.len() {
+                    let b = unsafe { core::ptr::read_volatile(buf.add(i)) };
+                    if b != test_msg[i] { ok = false; }
+                }
+                if ok {
+                    println!("NVMe: write+read verify OK");
+                } else {
+                    println!("NVMe: verify FAILED");
+                }
+            }
+        }
     }
 
     // Тест
