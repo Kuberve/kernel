@@ -134,11 +134,9 @@ pub extern "C" fn kmain() -> ! {
         println!("NVMe NS1: nsze={} lbads={}", ns.nsze, ns.lbads);
     }
 
-    // I/O queues
     if !unsafe { device::nvme::create_io_queues(&mut nvme) } {
         panic!("I/O queues failed");
     }
-    println!("NVMe: I/O queues ready");
 
     // Mount FAT32 (глобально)
     match unsafe { device::fat32::mount_global(&nvme) } {
@@ -151,9 +149,10 @@ pub extern "C" fn kmain() -> ! {
 
     // --- virtio-net ---
     println!("=== Network ===");
-    let _virtio_net = unsafe { device::virtio_net::init() };
-    if _virtio_net.is_some() {
+    let mut virtio_net_opt = unsafe { device::virtio_net::init() };
+    if let Some(ref vn) = virtio_net_opt {
         println!("virtio-net initialized");
+        unsafe { device::virtio_net::setup_rx(vn); }
     } else {
         println!("virtio-net NOT FOUND");
     }
@@ -195,8 +194,23 @@ pub extern "C" fn kmain() -> ! {
 
     println!("Kernel alive. Main becomes idle.");
 
-    // kmain превращается в idle-поток
+    // После enable interrupts — поллинг RX
+    // Идём в бесконечный цикл поллинга вместо wfe
+    println!("Entering network poll loop...");
+    let mut poll_counter = 0u32;
     loop {
-        unsafe { asm!("wfe") }
+        if let Some(ref mut vn) = virtio_net_opt {
+            let n = unsafe { device::virtio_net::poll_rx(vn) };
+            if n > 0 {
+                println!("poll: processed {} packets", n);
+            }
+            poll_counter = poll_counter.wrapping_add(1);
+            // Раз в ~10000 итераций — короткий wfe (даём CPU другим)
+            if poll_counter % 10000 == 0 {
+                unsafe { asm!("wfe") };
+            }
+        } else {
+            unsafe { asm!("wfe") };
+        }
     }
 }

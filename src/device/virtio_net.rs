@@ -3,6 +3,29 @@ use crate::device::pci::{config_read32, config_write32, bar_size_mask, assign_ba
 use crate::arch::aarch64::phys;
 
 // ============================================================
+// MMIO helpers (доступ к BAR4 регионам)
+// ============================================================
+
+unsafe fn read_u8(base: u64, off: u64) -> u8 {
+    core::ptr::read_volatile((base + off) as *const u8)
+}
+unsafe fn read_u16(base: u64, off: u64) -> u16 {
+    core::ptr::read_volatile((base + off) as *const u16)
+}
+unsafe fn read_u32(base: u64, off: u64) -> u32 {
+    core::ptr::read_volatile((base + off) as *const u32)
+}
+unsafe fn write_u8(base: u64, off: u64, v: u8) {
+    core::ptr::write_volatile((base + off) as *mut u8, v);
+}
+unsafe fn write_u16(base: u64, off: u64, v: u16) {
+    core::ptr::write_volatile((base + off) as *mut u16, v);
+}
+unsafe fn write_u32(base: u64, off: u64, v: u32) {
+    core::ptr::write_volatile((base + off) as *mut u32, v);
+}
+
+// ============================================================
 // Virtqueue structures (Virtio 1.0 §2.6.6)
 // ============================================================
 
@@ -63,6 +86,115 @@ pub struct VirtioNet {
     pub tx: Virtqueue,
     pub notify_off: u32,          // смещение NOTIFY cap в BAR4
     pub notify_mult: u32,         // notify_off_multiplier
+}
+
+// ============================================================
+// RX setup and polling
+// ============================================================
+
+const RX_BUF_SIZE: usize = 2048;   // ≥ 1526 (Ethernet max frame) + 10 virtio_net_hdr
+const NUM_RX_BUFS: usize = 256;
+
+static mut RX_BUF_PTRS: [u64; NUM_RX_BUFS] = [0; NUM_RX_BUFS];
+
+/// Заполнить RX queue дескрипторами + avail ring + notify device.
+pub unsafe fn setup_rx(vn: &VirtioNet) -> bool {
+    let desc_base = vn.rx.desc_pa;
+    let avail_base = vn.rx.avail_pa;
+    let size = vn.rx.size as usize;
+
+    // 1. Заполнить descriptors
+    for i in 0..size {
+        let buf_pa = match phys::alloc_page() {
+            Some(p) => p,
+            None => { println!("virtio-net: RX alloc failed at {}", i); return false; }
+        };
+        core::ptr::write_bytes(buf_pa as *mut u8, 0, 4096);
+        RX_BUF_PTRS[i] = buf_pa as u64;
+
+        let desc = &mut *((desc_base + (i * 16) as u64) as *mut VirtqDesc);
+        desc.addr = buf_pa as u64;
+        desc.len = RX_BUF_SIZE as u32;
+        desc.flags = 2;
+        desc.next = 0;
+    }
+
+    // 2. Заполнить avail ring: 0, 1, 2, ..., size-1
+    let avail = &mut *(avail_base as *mut AvailPage);
+    avail.flags = 0;
+    for i in 0..size {
+        avail.ring[i] = i as u16;
+    }
+    avail.idx = size as u16;
+
+    // 3. Memory barrier
+    core::arch::asm!("dsb sy");
+
+    // 4. Notify device: RX queue idx = 0
+    notify_queue(vn, 0);
+
+    println!("virtio-net: RX queue filled ({} descriptors)", size);
+    true
+}
+
+/// Прочитать notify_off для очереди qidx и записать doorbell.
+unsafe fn notify_queue(vn: &VirtioNet, qidx: u16) {
+    // queue_select = qidx
+    write_u16(vn.bar, 0x16, qidx);
+    // queue_notify_off (offset 0x1E, u16)
+    let notify_off = read_u16(vn.bar, 0x1E);
+    let addr = vn.bar + vn.notify_off as u64 + (notify_off as u64) * vn.notify_mult as u64;
+    core::arch::asm!("dsb sy");
+    write_u16(addr, 0, qidx);
+}
+
+/// Поллинг RX: забрать все доступные пакеты, вывести EtherType.
+pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
+    let avail_base = vn.rx.avail_pa;
+    let used_base = vn.rx.used_pa;
+    let size = vn.rx.size as usize;
+
+    let used = &mut *(used_base as *mut UsedPage);
+    let avail = &mut *(avail_base as *mut AvailPage);
+
+    core::arch::asm!("dsb sy");
+
+    let mut count = 0u32;
+    while vn.rx.last_used_idx != used.idx {
+        let idx = (vn.rx.last_used_idx as usize) % size;
+        let elem = used.ring[idx];
+        let desc_id = elem.id as usize;
+        let pkt_len = elem.len as usize;
+
+        if desc_id < size && pkt_len > 0 {
+            let buf_pa = RX_BUF_PTRS[desc_id];
+            let buf = core::slice::from_raw_parts(buf_pa as *const u8, pkt_len);
+            let dst_mac = &buf[0..6];
+            let src_mac = &buf[6..12];
+            let ethertype = ((buf[12] as u16) << 8) | buf[13] as u16;
+
+            println!("RX pkt #{}: len={} ethertype={:#06x}",
+                     desc_id, pkt_len, ethertype);
+            println!("  dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                     dst_mac[0], dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
+            println!("  src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                     src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
+        }
+
+        // Вернуть desc в avail ring
+        avail.ring[(avail.idx as usize) % size] = desc_id as u16;
+        avail.idx = avail.idx.wrapping_add(1);
+        vn.rx.last_used_idx = vn.rx.last_used_idx.wrapping_add(1);
+        count += 1;
+
+        if count >= size as u32 { break; }  // safety
+    }
+
+    if count > 0 {
+        core::arch::asm!("dsb sy");
+        notify_queue(vn, 0);   // снова сказать device "можешь писать"
+    }
+    count
 }
 
 pub unsafe fn init() -> Option<VirtioNet> {
