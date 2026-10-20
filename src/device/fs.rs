@@ -1,5 +1,5 @@
-use crate::println;
 use crate::device::fat32;
+use crate::device::fat32::NvmeBuf;
 
 pub const MAX_FDS: usize = 32;
 
@@ -8,19 +8,32 @@ static mut FD_FIRST_CLUSTER: [u32; MAX_FDS] = [0; MAX_FDS];
 static mut FD_SIZE: [u32; MAX_FDS] = [0; MAX_FDS];
 static mut FD_OFFSET: [u32; MAX_FDS] = [0; MAX_FDS];
 
-static mut READ_BUF: [u8; 4096] = [0; 4096];
-static mut WRITE_BUF: [u8; 4096] = [0; 4096];
+static mut READ_BUF:  NvmeBuf = NvmeBuf([0; 4096]);
+static mut WRITE_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+static mut DIR_BUF:   NvmeBuf = NvmeBuf([0; 4096]);
 
-pub unsafe fn fd_open(path: &str) -> i64 {
+pub unsafe fn fd_open(path: &str, flags: u64) -> i64 {
     let fs = match fat32::get() {
         Some(f) => f,
         None => return -1,
     };
-    let (first_cluster, size, is_dir) = match fs.find_entry(fs.root_cluster, path) {
-        Some(e) => e,
-        None => return -1,
+
+    let (first_cluster, size) = match fs.find_entry(fs.root_cluster, path) {
+        Some((c, s, is_dir)) => {
+            if is_dir { return -1; }
+            (c, s)
+        }
+        None => {
+            if flags & kuberve_abi::flags::O_CREAT != 0 {
+                match fs.create_file(fs.root_cluster, path) {
+                    Some((c, s)) => (c, s),
+                    None => return -1,
+                }
+            } else {
+                return -1;
+            }
+        }
     };
-    if is_dir { return -1; }
 
     for i in 0..MAX_FDS {
         if !FD_USED[i] {
@@ -48,7 +61,7 @@ pub unsafe fn fd_read(fd: u64, buf: u64, len: u64) -> i64 {
     };
 
     let cluster_size = (fs.bytes_per_sector as u32) * (fs.sectors_per_cluster as u32);
-    if cluster_size as usize > READ_BUF.len() { return -1; }
+    if cluster_size as usize > READ_BUF.0.len() { return -1; }
 
     // Traverse до нужного кластера
     let skip = offset / cluster_size;
@@ -59,7 +72,7 @@ pub unsafe fn fd_read(fd: u64, buf: u64, len: u64) -> i64 {
     }
     let mut in_cluster = (offset % cluster_size) as usize;
 
-    let buf_pa = &raw mut READ_BUF as u64;
+    let buf_pa = &raw mut READ_BUF as *mut NvmeBuf as u64;
     let out = buf as *mut u8;
     let mut written = 0u32;
     let mut remaining = to_read;
@@ -111,7 +124,7 @@ pub unsafe fn fd_write(fd: u64, buf: u64, len: u64) -> i64 {
     };
 
     let cluster_size = (fs.bytes_per_sector as u32) * (fs.sectors_per_cluster as u32);
-    if cluster_size as usize > WRITE_BUF.len() { return -1; }
+    if cluster_size as usize > WRITE_BUF.0.len() { return -1; }
 
     // Найти кластер, в котором начинается offset
     let skip = offset / cluster_size;
@@ -122,7 +135,7 @@ pub unsafe fn fd_write(fd: u64, buf: u64, len: u64) -> i64 {
     }
     let mut in_cluster = (offset % cluster_size) as usize;
 
-    let buf_pa = &raw mut WRITE_BUF as u64;
+    let buf_pa = &raw mut READ_BUF as *mut NvmeBuf as u64;
     let src = buf as *const u8;
     let mut written = 0u32;
     let mut remaining = to_write;

@@ -307,7 +307,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
                 Ok(s) => s,
                 Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
             };
-            ctx.x0 = unsafe { crate::device::fs::fd_open(path) } as u64;
+            ctx.x0 = unsafe { crate::device::fs::fd_open(path, a2) } as u64;
             old_sp
         }
         syscall::SYS_READ => {

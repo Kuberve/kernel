@@ -1,7 +1,10 @@
 use crate::println;
 use crate::device::vfs::{VfsError, VfsResult};
-use crate::device::nvme::{Nvme, read_blocks};
+use crate::device::nvme::{Nvme, read_blocks, write_blocks};
 use crate::arch::aarch64::phys;
+
+#[repr(C, align(4096))]
+pub struct NvmeBuf(pub [u8; 4096]);
 
 pub struct Fat32 {
     pub bar_nvme: *const Nvme,   // для чтения блоков
@@ -138,8 +141,8 @@ impl Fat32 {
         let fat_sector = self.reserved_sectors as u64
             + ((cluster as u64) * 4) / self.bytes_per_sector as u64;
 
-        static mut SCRATCH: [u8; 512] = [0; 512];
-        let buf_pa = &raw mut SCRATCH as u64;
+        static mut SCRATCH: NvmeBuf = NvmeBuf([0; 4096]);
+        let buf_pa = &raw mut SCRATCH as *mut NvmeBuf as u64;
 
         if !read_blocks(nvme, 1, fat_sector, 1, buf_pa) {
             return 0x0FFFFFFF;
@@ -149,6 +152,136 @@ impl Fat32 {
         read_u32(buf, offset_in_sector) & 0x0FFFFFFF
     }
 
+    /// Записать FAT entry в обе копии FAT. Сохраняет reserved верхние 4 бита.
+    pub unsafe fn write_fat_entry(&self, cluster: u32, value: u32) -> bool {
+        let nvme = &*self.bar_nvme;
+        let entry_offset = (cluster as u64) * 4;
+        let sector_in_fat = entry_offset / self.bytes_per_sector as u64;
+        let offset_in_sector = (entry_offset % self.bytes_per_sector as u64) as usize;
+
+        static mut FAT_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let buf_pa = &raw mut FAT_BUF as *mut NvmeBuf as u64;
+
+        // FAT1
+        let fat1_sector = self.reserved_sectors as u64 + sector_in_fat;
+        if !read_blocks(nvme, 1, fat1_sector, 1, buf_pa) { return false; }
+
+        let buf = core::slice::from_raw_parts_mut(buf_pa as *mut u8, 512);
+        let old = read_u32(buf, offset_in_sector);
+        let new = (old & 0xF0000000) | (value & 0x0FFFFFFF);
+        let bytes = new.to_le_bytes();
+        for i in 0..4 {
+            buf[offset_in_sector + i] = bytes[i];
+        }
+        if !write_blocks(nvme, 1, fat1_sector, 1, buf_pa) { return false; }
+
+        // FAT2 (same offset, but + sectors_per_fat from FAT1)
+        let fat2_sector = fat1_sector + self.sectors_per_fat as u64;
+        if !write_blocks(nvme, 1, fat2_sector, 1, buf_pa) { return false; }
+
+        true
+    }
+
+    /// Найти свободный кластер (FAT entry = 0), пометить EOC, вернуть номер.
+    pub unsafe fn alloc_cluster(&self) -> Option<u32> {
+        let max_cluster = self.total_sectors / (self.sectors_per_cluster as u32) - 2;
+        for cluster in 2..max_cluster {
+            let next = self.next_cluster(cluster);
+            if next == 0 {
+                if self.write_fat_entry(cluster, 0x0FFFFFFF) {
+                    return Some(cluster);
+                }
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Найти свободное место в директории (entry с первым байтом 0x00 или 0xE5).
+    /// Возвращает (cluster, offset_in_cluster, entry_index).
+    pub unsafe fn find_free_dir_entry(&self, dir_cluster: u32) -> Option<(u32, u32, usize)> {
+        let mut cluster = dir_cluster;
+        while cluster >= 2 && cluster < 0x0FFFFFF8 {
+            static mut DIR_SCRATCH: NvmeBuf = NvmeBuf([0; 4096]);
+            let buf_pa = &raw mut DIR_SCRATCH as *mut NvmeBuf as u64;
+            if !self.read_cluster(cluster, buf_pa) { return None; }
+            let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+            let entries = cluster_size / 32;
+            let buf = core::slice::from_raw_parts(buf_pa as *const u8, cluster_size);
+            for i in 0..entries {
+                let first = buf[i * 32];
+                if first == 0x00 || first == 0xE5 {
+                    return Some((cluster, i as u32 * 32, i));
+                }
+            }
+            cluster = self.next_cluster(cluster);
+        }
+        None
+    }
+
+    /// Создать пустой файл. Возвращает (first_cluster, size=0).
+    /// Если файл уже существует — возвращает его entry.
+    pub unsafe fn create_file(&self, dir_cluster: u32, path: &str) -> Option<(u32, u32)> {
+        // Проверить существование
+        if let Some((c, s, is_dir)) = self.find_entry(dir_cluster, path) {
+            if is_dir { return None; }
+            return Some((c, s));
+        }
+
+        let (dir_cl, _entry_offset, entry_idx) = self.find_free_dir_entry(dir_cluster)?;
+        let first_cluster = self.alloc_cluster()?;
+
+        // Сформировать 8.3
+        let mut target = [b' '; 11];
+        let bytes = path.as_bytes();
+        let mut i = 0; let mut j = 0;
+        while i < bytes.len() && j < 8 {
+            let c = bytes[i];
+            if c == b'.' { break; }
+            target[j] = if c >= b'a' && c <= b'z' { c - 32 } else { c };
+            i += 1; j += 1;
+        }
+        while i < bytes.len() && bytes[i] != b'.' { i += 1; }
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            let mut k = 8;
+            while i < bytes.len() && k < 11 {
+                let c = bytes[i];
+                target[k] = if c >= b'a' && c <= b'z' { c - 32 } else { c };
+                i += 1; k += 1;
+            }
+        }
+
+        // Прочитать dir cluster, обновить entry, записать обратно
+        static mut CRE_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let buf_pa = &raw mut CRE_BUF as *mut NvmeBuf as u64;
+        if !self.read_cluster(dir_cl, buf_pa) { return None; }
+        let buf = core::slice::from_raw_parts_mut(buf_pa as *mut u8, 512);
+
+        let off = entry_idx * 32;
+        for k in 0..11 { buf[off + k] = target[k]; }
+        buf[off + 11] = 0x20;  // attr: archive (обычный файл)
+        buf[off + 12] = 0;
+        buf[off + 13] = 0;
+        for k in 0..4 { buf[off + 14 + k] = 0; }  // CrtTime/Date
+        for k in 0..2 { buf[off + 18 + k] = 0; }  // LstAccDate
+        // FstClusHI
+        let hi = ((first_cluster >> 16) & 0xFFFF) as u16;
+        buf[off + 20] = (hi & 0xFF) as u8;
+        buf[off + 21] = ((hi >> 8) & 0xFF) as u8;
+        for k in 0..4 { buf[off + 22 + k] = 0; }  // WrtTime/Date
+        // FstClusLO
+        let lo = (first_cluster & 0xFFFF) as u16;
+        buf[off + 26] = (lo & 0xFF) as u8;
+        buf[off + 27] = ((lo >> 8) & 0xFF) as u8;
+        // FileSize = 0
+        for k in 0..4 { buf[off + 28 + k] = 0; }
+
+        if !self.write_cluster(dir_cl, buf_pa) { return None; }
+
+        Some((first_cluster, 0))
+    }
+
     /// Прочитать содержимое директории (начиная с start_cluster), вывести entries.
     pub unsafe fn readdir(&self, start_cluster: u32) {
         let mut cluster = start_cluster;
@@ -156,8 +289,8 @@ impl Fat32 {
         let max_entries = 500;
 
         while cluster >= 2 && cluster < 0x0FFFFFF8 && total < max_entries {
-            static mut DIR_BUF: [u8; 512] = [0; 512];
-            let buf_pa = &raw mut DIR_BUF as u64;
+            static mut DIR_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+            let buf_pa = &raw mut DIR_BUF as *mut NvmeBuf as u64;
             if !self.read_cluster(cluster, buf_pa as u64) {
                 println!("FAT32: read cluster {} failed", cluster);
                 return;
@@ -305,8 +438,8 @@ impl Fat32 {
         let mut cluster = first_cluster;
         let mut written = 0usize;
 
-        static mut TMP: [u8; 512] = [0; 512];
-        let tmp_pa = &raw mut TMP as u64;
+        static mut TMP: NvmeBuf = NvmeBuf([0; 4096]);
+        let tmp_pa = &raw mut TMP as *mut NvmeBuf as u64;
         let out = out_pa as *mut u8;
 
         while cluster >= 2 && cluster < 0x0FFFFFF8 && written < size as usize {
@@ -322,7 +455,11 @@ impl Fat32 {
             written += copy_n;
             cluster = self.next_cluster(cluster);
         }
-        Some(written)
+        if written == size as usize {
+            Some(written)
+        } else {
+            None
+        }
     }   
 }
 
