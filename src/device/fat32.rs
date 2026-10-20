@@ -282,6 +282,45 @@ impl Fat32 {
         Some((first_cluster, 0))
     }
 
+    /// Обновить size (4 байта, offset 28) в dir entry по first_cluster файла.
+    pub unsafe fn update_dir_size(&self, dir_cluster: u32, file_first_cluster: u32, new_size: u32) -> bool {
+        let mut cluster = dir_cluster;
+        while cluster >= 2 && cluster < 0x0FFFFFF8 {
+            static mut UPD_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+            let buf_pa = &raw mut UPD_BUF as *mut NvmeBuf as u64;
+            if !self.read_cluster(cluster, buf_pa) { return false; }
+
+            let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+            let entries = cluster_size / 32;
+            let buf = core::slice::from_raw_parts_mut(buf_pa as *mut u8, cluster_size);
+
+            for i in 0..entries {
+                let off = i * 32;
+                let first = buf[off];
+                if first == 0x00 { return false; }
+                if first == 0xE5 { continue; }
+                let attr = buf[off + 11];
+                if attr == 0x0F { continue; }
+                if attr & 0x08 != 0 { continue; }
+
+                let hi = read_u16(buf, off + 20) as u32;
+                let lo = read_u16(buf, off + 26) as u32;
+                let entry_cluster = (hi << 16) | lo;
+
+                if entry_cluster == file_first_cluster {
+                    let bytes = new_size.to_le_bytes();
+                    buf[off + 28] = bytes[0];
+                    buf[off + 29] = bytes[1];
+                    buf[off + 30] = bytes[2];
+                    buf[off + 31] = bytes[3];
+                    return self.write_cluster(cluster, buf_pa);
+                }
+            }
+            cluster = self.next_cluster(cluster);
+        }
+        false
+    }
+
     /// Прочитать содержимое директории (начиная с start_cluster), вывести entries.
     pub unsafe fn readdir(&self, start_cluster: u32) {
         let mut cluster = start_cluster;

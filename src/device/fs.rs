@@ -110,13 +110,7 @@ pub unsafe fn fd_write(fd: u64, buf: u64, len: u64) -> i64 {
     let fd = fd as usize;
     let offset = FD_OFFSET[fd];
     let size = FD_SIZE[fd];
-
-    // MVP: только перезапись в пределах существующего размера
-    if offset >= size {
-        return -1;  // за пределами файла
-    }
-    let max_write = size - offset;
-    let to_write = core::cmp::min(len as u32, max_write);
+    let first_cluster = FD_FIRST_CLUSTER[fd];
 
     let fs = match fat32::get() {
         Some(f) => f,
@@ -124,48 +118,63 @@ pub unsafe fn fd_write(fd: u64, buf: u64, len: u64) -> i64 {
     };
 
     let cluster_size = (fs.bytes_per_sector as u32) * (fs.sectors_per_cluster as u32);
-    if cluster_size as usize > WRITE_BUF.0.len() { return -1; }
+    if cluster_size as usize > 4096 { return -1; }
 
-    // Найти кластер, в котором начинается offset
-    let skip = offset / cluster_size;
-    let mut cluster = FD_FIRST_CLUSTER[fd];
-    for _ in 0..skip {
-        cluster = fs.next_cluster(cluster);
-        if cluster >= 0x0FFFFFF8 { return -1; }
+    let new_size = core::cmp::max(size, offset + len as u32);
+    let n_needed = ((new_size + cluster_size - 1) / cluster_size) as u32;
+    if n_needed > 32 { return -1; }
+
+    // Собрать существующий chain
+    let mut clusters = [0u32; 32];
+    let mut n = 0u32;
+    let mut cur = first_cluster;
+    while n < n_needed && cur >= 2 && cur < 0x0FFFFFF8 {
+        clusters[n as usize] = cur;
+        n += 1;
+        if n >= n_needed { break; }
+        cur = fs.next_cluster(cur);
     }
-    let mut in_cluster = (offset % cluster_size) as usize;
+    if n == 0 { return -1; }
 
-    let buf_pa = &raw mut READ_BUF as *mut NvmeBuf as u64;
+    // Аллоцировать новые, если extend
+    while n < n_needed {
+        let new_c = match fs.alloc_cluster() {
+            Some(c) => c,
+            None => return -1,
+        };
+        if !fs.write_fat_entry(clusters[(n - 1) as usize], new_c) { return -1; }
+        clusters[n as usize] = new_c;
+        n += 1;
+    }
+
+    // Записать данные по кластерам
     let src = buf as *const u8;
-    let mut written = 0u32;
-    let mut remaining = to_write;
 
-    while remaining > 0 {
-        // Прочитать текущий кластер (нужен для partial write)
-        if !fs.read_cluster(cluster, buf_pa) { return -1; }
+    for i in 0..n {
+        let cluster_start = i * cluster_size;
+        let cluster_end = cluster_start + cluster_size;
+        let write_start = core::cmp::max(offset, cluster_start);
+        let write_end = core::cmp::min(offset + len as u32, cluster_end);
+        if write_start >= write_end { continue; }
 
-        let avail = cluster_size as usize - in_cluster;
-        let to_copy = core::cmp::min(avail, remaining as usize);
+        // Прочитать кластер (для partial write)
+        if !fs.read_cluster(clusters[i as usize], &raw mut WRITE_BUF as *mut NvmeBuf as u64) { return -1; }
 
-        // Копировать данные в буфер
-        let dst = buf_pa as *mut u8;
-        for i in 0..to_copy {
-            core::ptr::write_volatile(
-                dst.add(in_cluster + i),
-                core::ptr::read_volatile(src.add(written as usize + i)),
-            );
+        let buf_slice = core::slice::from_raw_parts_mut(&raw mut WRITE_BUF as *mut u8, cluster_size as usize);
+        for p in write_start..write_end {
+            buf_slice[(p - cluster_start) as usize] =
+                core::ptr::read_volatile(src.add((p - offset) as usize));
         }
 
-        // Записать кластер обратно
-        if !fs.write_cluster(cluster, buf_pa) { return -1; }
-
-        written += to_copy as u32;
-        remaining -= to_copy as u32;
-        cluster = fs.next_cluster(cluster);
-        in_cluster = 0;
-        if cluster >= 0x0FFFFFF8 { break; }
+        if !fs.write_cluster(clusters[i as usize], &raw mut WRITE_BUF as *mut NvmeBuf as u64) { return -1; }
     }
 
-    FD_OFFSET[fd] += written;
-    written as i64
+    // Обновить size в dir entry
+    if new_size != size {
+        if !fs.update_dir_size(fs.root_cluster, first_cluster, new_size) { return -1; }
+        FD_SIZE[fd] = new_size;
+    }
+
+    FD_OFFSET[fd] = offset + len as u32;
+    len as i64
 }
