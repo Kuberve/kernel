@@ -49,17 +49,20 @@ static mut THREADS: [Thread; MAX_THREADS] = [EMPTY_THREAD; MAX_THREADS];
 static mut STACKS: [[u8; STACK_SIZE]; MAX_THREADS] =
     [[0; STACK_SIZE]; MAX_THREADS];
 pub static mut QUEUES: [Queue; MAX_THREADS] = [EMPTY_QUEUE; MAX_THREADS];
+static mut BOOT_AS: crate::arch::aarch64::mmu::AddressSpace =
+    crate::arch::aarch64::mmu::EMPTY_AS;
 static mut COUNT: usize = 0;
 static mut CURRENT: usize = IDLE;
 static mut TICK: u64 = 0;
 static mut IDLE_SP: u64 = 0;
 
-pub fn init() {
+pub fn init(boot_as: crate::arch::aarch64::mmu::AddressSpace) {
     unsafe {
         COUNT = 0;
         CURRENT = IDLE;
         TICK = 0;
         IDLE_SP = 0;
+        BOOT_AS = boot_as;
         for i in 0..MAX_THREADS {
             QUEUES[i] = EMPTY_QUEUE;
         }
@@ -104,7 +107,13 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
     println!("spawned '{}' id={} sp={:#x}", name, id, sp);
 }
 
-pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) {
+pub unsafe fn spawn_el0(
+    name: &'static str,
+    priority: u8,
+    user_entry: u64,
+    usp: u64,
+    elf_bytes: &[u8],
+) {
     let id = COUNT;
     if id >= MAX_THREADS {
         println!("sched: max threads");
@@ -112,6 +121,15 @@ pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) 
     }
     COUNT += 1;
 
+    // Создать AS с per-process code/stack/heap
+    let as_ = crate::arch::aarch64::mmu::create_as(id);
+
+    // Активировать AS, загрузить ELF по vaddr (0x40400000) — попадёт в свой code region
+    crate::arch::aarch64::mmu::activate(&as_);
+    crate::loader::load_elf(elf_bytes);
+    crate::arch::aarch64::mmu::activate(&BOOT_AS);
+
+    // Kernel stack (SP_EL1) — как раньше
     let top = (STACKS[id].as_ptr() as u64 + STACK_SIZE as u64) & !0xF;
     let sp = top - CTX_SIZE;
     let p = sp as *mut u64;
@@ -119,8 +137,7 @@ pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) 
         core::ptr::write_volatile(p.add(i as usize), 0);
     }
 
-    // SavedCtx: elr = entry (user code), spsr = 0x000 (EL0t, IRQ on)
-    core::ptr::write_volatile(p.add(0), entry);
+    core::ptr::write_volatile(p.add(0), user_entry);
     core::ptr::write_volatile(p.add(1), 0x000u64);
 
     THREADS[id] = Thread {
@@ -133,7 +150,7 @@ pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) 
         blocked_on_send: usize::MAX,
         id: id as u32,
         name,
-        as_: crate::arch::aarch64::mmu::create_as(id),
+        as_,
     };
 
     println!("spawned '{}' (EL0) id={} ksp={:#x} usp={:#x}", name, id, sp, usp);

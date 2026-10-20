@@ -101,11 +101,6 @@ pub extern "C" fn kmain() -> ! {
     unsafe { crate::arch::aarch64::mmu::enable(); }
     println!("MMU enabled.");
 
-    // Загрузить userspace ELF
-    println!("Loading user ELF ({} bytes)...", USER_ELF.len());
-    let user_entry = unsafe { loader::load_elf(USER_ELF) };
-    println!("user entry = {:#x}", user_entry);
-
     // Тест
     unsafe {
         let p1 = crate::arch::aarch64::phys::alloc_page().unwrap();
@@ -132,13 +127,13 @@ pub extern "C" fn kmain() -> ! {
     }
     println!("heap OK");
 
-    sched::init();
+    sched::init(boot_as);
     unsafe {
         sched::spawn("A", 1, thread_a);
         sched::spawn("B", 2, thread_b);
-        sched::spawn_el0("uart",    2, user_entry, 0x40700000);
-        sched::spawn_el0("client1", 2, user_entry, 0x40700000);
-        sched::spawn_el0("client2", 2, user_entry, 0x40700000);
+        sched::spawn_el0("uart",    2, 0x40400000, 0x40700000, USER_ELF);
+        sched::spawn_el0("client1", 2, 0x40400000, 0x40700000, USER_ELF);
+        sched::spawn_el0("client2", 2, 0x40400000, 0x40700000, USER_ELF);
     }
 
     timer::start(1);

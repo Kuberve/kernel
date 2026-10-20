@@ -91,8 +91,10 @@ pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
     l2.entries[0] = 0x40000000u64 | ATTR_NORMAL | AF | SH_INNER | BLOCK;
     l2.entries[1] = 0x40200000u64 | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
 
-    // User code (L2[2]) — общий для всех (0x40400000)
-    l2.entries[2] = 0x40400000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | PXN | BLOCK;
+    // User code (L2[2]) — свой 2MB регион на процесс
+    // tid=0 → 0x48000000, tid=1 → 0x48200000, ..., tid=15 → 0x49E00000
+    let code_region = 0x48000000u64 + (thread_id as u64) * 0x200000;
+    l2.entries[2] = code_region | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | PXN | BLOCK;
 
     // User stack (L2[3]) — свой 2MB регион на процесс
     // tid=0 → 0x46000000, tid=1 → 0x46200000, ..., tid=15 → 0x47E00000
