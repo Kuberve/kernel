@@ -1,4 +1,3 @@
-use core::arch::asm;
 use crate::println;
 use crate::arch::aarch64::phys;
 

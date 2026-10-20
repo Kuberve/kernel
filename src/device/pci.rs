@@ -1,4 +1,3 @@
-use core::arch::asm;
 use crate::println;
 
 /// QEMU virt (ARM64): ECAM base.

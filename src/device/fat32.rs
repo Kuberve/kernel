@@ -1,5 +1,5 @@
 use crate::println;
-use crate::device::vfs::{VfsError, VfsResult, MountInfo};
+use crate::device::vfs::{VfsError, VfsResult};
 use crate::device::nvme::{Nvme, read_blocks};
 use crate::arch::aarch64::phys;
 
@@ -128,17 +128,16 @@ impl Fat32 {
         let nvme = &*self.bar_nvme;
         let fat_sector = self.reserved_sectors as u64
             + ((cluster as u64) * 4) / self.bytes_per_sector as u64;
-        let buf_pa = match phys::alloc_page() {
-            Some(p) => p,
-            None => return 0x0FFFFFFF,
-        };
-        if !read_blocks(nvme, 1, fat_sector, 1, buf_pa as u64) {
+
+        static mut SCRATCH: [u8; 512] = [0; 512];
+        let buf_pa = &raw mut SCRATCH as u64;
+
+        if !read_blocks(nvme, 1, fat_sector, 1, buf_pa) {
             return 0x0FFFFFFF;
         }
         let offset_in_sector = ((cluster as usize) * 4) % self.bytes_per_sector as usize;
         let buf = core::slice::from_raw_parts(buf_pa as *const u8, self.bytes_per_sector as usize);
-        let val = read_u32(buf, offset_in_sector);
-        val & 0x0FFFFFFF
+        read_u32(buf, offset_in_sector) & 0x0FFFFFFF
     }
 
     /// Прочитать содержимое директории (начиная с start_cluster), вывести entries.
@@ -148,10 +147,8 @@ impl Fat32 {
         let max_entries = 500;
 
         while cluster >= 2 && cluster < 0x0FFFFFF8 && total < max_entries {
-            let buf_pa = match phys::alloc_page() {
-                Some(p) => p,
-                None => return,
-            };
+            static mut DIR_BUF: [u8; 512] = [0; 512];
+            let buf_pa = &raw mut DIR_BUF as u64;
             if !self.read_cluster(cluster, buf_pa as u64) {
                 println!("FAT32: read cluster {} failed", cluster);
                 return;
@@ -299,11 +296,12 @@ impl Fat32 {
         let mut cluster = first_cluster;
         let mut written = 0usize;
 
-        let tmp_pa = phys::alloc_page()?;
+        static mut TMP: [u8; 512] = [0; 512];
+        let tmp_pa = &raw mut TMP as u64;
         let out = out_pa as *mut u8;
 
         while cluster >= 2 && cluster < 0x0FFFFFF8 && written < size as usize {
-            if !self.read_cluster(cluster, tmp_pa as u64) {
+            if !self.read_cluster(cluster, tmp_pa) {
                 return None;
             }
             let remain = size as usize - written;
