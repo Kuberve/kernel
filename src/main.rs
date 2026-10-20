@@ -121,6 +121,14 @@ pub extern "C" fn kmain() -> ! {
         let csts = unsafe { core::ptr::read_volatile((bar + 0x1C) as *const u32) };
         println!("NVMe CSTS = {:#x}", csts);
     }
+    if let Some(bar) = nvme_bar {
+        let _nvme = unsafe { device::nvme::init(bar) };
+        if _nvme.is_some() {
+            println!("NVMe initialized OK");
+        } else {
+            println!("NVMe init FAILED");
+        }
+    }
 
     // Тест
     unsafe {
