@@ -1,14 +1,7 @@
-/// Размер очереди сообщений на процесс (8 сообщений).
-pub const QUEUE_SIZE: usize = 8;
+pub use kuberve_abi::Message;
+pub use kuberve_abi::tags;
 
-/// Сообщение — фиксированный размер, 64 байта.
-/// tag — тип сообщения (например, 1=write, 2=exit), data — payload.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Message {
-    pub tag: u64,
-    pub data: [u64; 7],     // 7 * 8 = 56 байт, + tag = 64 байта
-}
+pub const QUEUE_SIZE: usize = 8;
 
 pub const EMPTY_MSG: Message = Message {
     tag: 0,

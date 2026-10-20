@@ -1,17 +1,19 @@
 use core::arch::asm;
 use crate::arch::aarch64::ipc::Message;
 
+pub use kuberve_abi::sys as sys_num;
+
 // Номера syscall'ов
-pub const SYS_YIELD: u64 = 0;
-pub const SYS_WRITE: u64 = 1;
-pub const SYS_EXIT:  u64 = 2;
-pub const SYS_SLEEP: u64 = 3;
-pub const SYS_GETPID: u64 = 4;
-pub const SYS_SEND: u64 = 5;
-pub const SYS_RECV: u64 = 6;
-pub const SYS_IRQ_ACK: u64 = 7;
-pub const SYS_TRY_SEND: u64 = 8;
-pub const SYS_TRY_RECV: u64 = 9;
+pub const SYS_YIELD:    u64 = sys_num::YIELD;
+pub const SYS_WRITE:    u64 = sys_num::WRITE;
+pub const SYS_EXIT:     u64 = sys_num::EXIT;
+pub const SYS_SLEEP:    u64 = sys_num::SLEEP;
+pub const SYS_GETPID:   u64 = sys_num::GETPID;
+pub const SYS_SEND:     u64 = sys_num::SEND;
+pub const SYS_RECV:     u64 = sys_num::RECV;
+pub const SYS_IRQ_ACK:  u64 = sys_num::IRQ_ACK;
+pub const SYS_TRY_SEND: u64 = sys_num::TRY_SEND;
+pub const SYS_TRY_RECV: u64 = sys_num::TRY_RECV;
 
 /// Отдать CPU добровольно.
 pub fn sys_yield() {
