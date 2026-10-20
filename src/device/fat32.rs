@@ -314,5 +314,21 @@ impl Fat32 {
             cluster = self.next_cluster(cluster);
         }
         Some(written)
-    }
+    }   
+}
+
+// ============================================================
+// Глобальный mounted FS
+// ============================================================
+
+pub static mut FS: Option<Fat32> = None;
+
+pub unsafe fn mount_global(nvme: &Nvme) -> VfsResult<()> {
+    let fs = mount(nvme)?;
+    FS = Some(fs);
+    Ok(())
+}
+
+pub fn get() -> Option<&'static Fat32> {
+    unsafe { FS.as_ref() }
 }

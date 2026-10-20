@@ -295,6 +295,29 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             ctx.x0 = sbrk_impl(delta);
             old_sp
         }
+        syscall::SYS_OPEN => {
+            let path_ptr = a0 as *const u8;
+            let path_len = a1 as usize;
+            if path_len == 0 || path_len > 256 {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let path_slice = core::slice::from_raw_parts(path_ptr, path_len);
+            let path = match core::str::from_utf8(path_slice) {
+                Ok(s) => s,
+                Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            ctx.x0 = unsafe { crate::device::fs::fd_open(path) } as u64;
+            old_sp
+        }
+        syscall::SYS_READ => {
+            ctx.x0 = unsafe { crate::device::fs::fd_read(a0, a1, a2) } as u64;
+            old_sp
+        }
+        syscall::SYS_CLOSE => {
+            ctx.x0 = unsafe { crate::device::fs::fd_close(a0) } as u64;
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(),
         _ => {
             crate::println!("unknown syscall {}", num);

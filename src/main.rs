@@ -105,171 +105,69 @@ pub extern "C" fn kmain() -> ! {
     unsafe { crate::arch::aarch64::mmu::enable(); }
     println!("MMU enabled.");
 
-        // --- PCIe + NVMe ---
+    // --- PCIe + NVMe ---
     let nvme_bar = unsafe { device::pci::init() };
-    let mut nvme_opt: Option<device::nvme::Nvme> = None;
-    let mut fat32_fs: Option<device::fat32::Fat32> = None;
-
-    if let Some(bar) = nvme_bar {
-        println!("NVMe BAR0 = {:#x}", bar);
-
-        let cap_lo = unsafe { core::ptr::read_volatile(bar as *const u32) };
-        let cap_hi = unsafe { core::ptr::read_volatile((bar + 4) as *const u32) };
-        let cap = ((cap_hi as u64) << 32) | (cap_lo as u64);
-        println!("NVMe CAP = {:#x}", cap);
-        let vs = unsafe { core::ptr::read_volatile((bar + 8) as *const u32) };
-        println!("NVMe VS = {:#x}", vs);
-        let csts = unsafe { core::ptr::read_volatile((bar + 0x1C) as *const u32) };
-        println!("NVMe CSTS = {:#x}", csts);
-
-        let mut nvme = match unsafe { device::nvme::init(bar) } {
-            Some(n) => n,
-            None => panic!("NVMe init failed"),
-        };
-        println!("NVMe initialized OK");
-
-        // Identify Controller
-        let id_ctrl_pa = unsafe {
-            crate::arch::aarch64::phys::alloc_page().expect("no page for identify")
-        };
-        unsafe { core::ptr::write_bytes(id_ctrl_pa as *mut u8, 0, 4096); }
-        if let Some(id) = unsafe {
-            device::nvme::identify_controller(&mut nvme, id_ctrl_pa as u64)
-        } {
-            let model = core::str::from_utf8(&id.model).unwrap_or("?").trim_end();
-            let serial = core::str::from_utf8(&id.serial).unwrap_or("?").trim_end();
-            println!("NVMe model: '{}'", model);
-            println!("NVMe serial: '{}'", serial);
-        }
-
-        // Identify Namespace 1
-        let id_ns_pa = unsafe {
-            crate::arch::aarch64::phys::alloc_page().expect("no page for ns")
-        };
-        unsafe { core::ptr::write_bytes(id_ns_pa as *mut u8, 0, 4096); }
-        if let Some(ns) = unsafe {
-            device::nvme::identify_namespace(&mut nvme, id_ns_pa as u64, 1)
-        } {
-            println!("NVMe NS1: nsze={} lbads={}", ns.nsze, ns.lbads);
-        }
-
-        // I/O queues
-        if unsafe { device::nvme::create_io_queues(&mut nvme) } {
-            println!("NVMe: I/O queues ready");
-
-            // Read block 0
-            let io_buf_pa = unsafe {
-                crate::arch::aarch64::phys::alloc_page().expect("no page for io buf")
-            };
-            unsafe { core::ptr::write_bytes(io_buf_pa as *mut u8, 0, 4096); }
-
-            if unsafe { device::nvme::read_blocks(&nvme, 1, 0, 1, io_buf_pa as u64) } {
-                println!("NVMe: read block 0 OK");
-            }
-
-            // Write + verify: используем последний сектор (безопасно, не в FAT)
-            let test_lba = (131072 - 1) as u64;  // total_sectors - 1 из mount
-            let test_pa = unsafe {
-                crate::arch::aarch64::phys::alloc_page().expect("no page")
-            };
-            let test_msg = b"Hello NVMe!";
-            unsafe {
-                core::ptr::write_bytes(test_pa as *mut u8, 0, 4096);
-                for i in 0..test_msg.len() {
-                    core::ptr::write_volatile((test_pa as *mut u8).add(i), test_msg[i]);
-                }
-            }
-            if unsafe { device::nvme::write_blocks(&nvme, 1, test_lba, 1, test_pa as u64) } {
-                println!("NVMe: write LBA {} OK", test_lba);
-            }
-
-            unsafe { core::ptr::write_bytes(io_buf_pa as *mut u8, 0, 4096); }
-            if unsafe { device::nvme::read_blocks(&nvme, 1, test_lba, 1, io_buf_pa as u64) } {
-                let buf = io_buf_pa as *const u8;
-                let mut ok = true;
-                for i in 0..test_msg.len() {
-                    let b = unsafe { core::ptr::read_volatile(buf.add(i)) };
-                    if b != test_msg[i] { ok = false; }
-                }
-                if ok {
-                    println!("NVMe: write+read LBA {} verify OK", test_lba);
-                } else {
-                    println!("NVMe: verify FAILED");
-                }
+    let mut nvme = match nvme_bar {
+        Some(bar) => {
+            println!("NVMe BAR0 = {:#x}", bar);
+            match unsafe { device::nvme::init(bar) } {
+                Some(n) => n,
+                None => panic!("NVMe init failed"),
             }
         }
+        None => panic!("no NVMe found"),
+    };
+    println!("NVMe initialized OK");
 
-        // Mount FAT32
-        match unsafe { device::fat32::mount(&nvme) } {
-            Ok(fs) => {
-                println!("FAT32 mounted: label='{}'", fs.label_str());
-
-                println!("--- Root directory ---");
-                unsafe { fs.readdir(fs.root_cluster); }
-                println!("--- End of root ---");
-
-                println!("--- Reading HELLO.TXT ---");
-                if let Some((cluster, size, is_dir)) = unsafe {
-                    fs.find_entry(fs.root_cluster, "HELLO.TXT")
-                } {
-                    if !is_dir {
-                        let buf_pa = unsafe {
-                            crate::arch::aarch64::phys::alloc_page().expect("no page for file")
-                        };
-                        unsafe { core::ptr::write_bytes(buf_pa as *mut u8, 0, 4096); }
-                        match unsafe { fs.read_file(cluster, size, buf_pa as u64) } {
-                            Some(n) => {
-                                let bytes = unsafe {
-                                    core::slice::from_raw_parts(buf_pa as *const u8, n)
-                                };
-                                let s = core::str::from_utf8(bytes).unwrap_or("<binary>");
-                                print!("HELLO.TXT content: '");
-                                print!("{}", s);
-                                println!("'");
-                            }
-                            None => println!("read_file failed"),
-                        }
-                    }
-                } else {
-                    println!("HELLO.TXT not found");
-                }
-                println!("--- End ---");
-
-                fat32_fs = Some(fs);
-            }
-            Err(e) => {
-                println!("FAT32 mount failed: {:?}", e);
-            }
-        }
-
-        nvme_opt = Some(nvme);
+    // Identify Controller
+    let id_ctrl_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page") };
+    unsafe { core::ptr::write_bytes(id_ctrl_pa as *mut u8, 0, 4096); }
+    if let Some(id) = unsafe { device::nvme::identify_controller(&mut nvme, id_ctrl_pa as u64) } {
+        let model = core::str::from_utf8(&id.model).unwrap_or("?").trim_end();
+        println!("NVMe model: '{}'", model);
     }
 
-    // --- Загрузить user.elf с диска (только в буфер, не в AS) ---
-    let mut user_elf: &[u8] = USER_ELF;   // fallback
-    if let Some(ref fs) = fat32_fs {
-        if let Some((cluster, size, is_dir)) = unsafe {
-            fs.find_entry(fs.root_cluster, "USER.ELF")
-        } {
+    // Identify Namespace 1
+    let id_ns_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page") };
+    unsafe { core::ptr::write_bytes(id_ns_pa as *mut u8, 0, 4096); }
+    if let Some(ns) = unsafe { device::nvme::identify_namespace(&mut nvme, id_ns_pa as u64, 1) } {
+        println!("NVMe NS1: nsze={} lbads={}", ns.nsze, ns.lbads);
+    }
+
+    // I/O queues
+    if !unsafe { device::nvme::create_io_queues(&mut nvme) } {
+        panic!("I/O queues failed");
+    }
+    println!("NVMe: I/O queues ready");
+
+    // Mount FAT32 (глобально)
+    match unsafe { device::fat32::mount_global(&nvme) } {
+        Ok(()) => {
+            let fs = device::fat32::get().unwrap();
+            println!("FAT32 mounted: label='{}'", fs.label_str());
+        }
+        Err(e) => panic!("FAT32 mount failed: {:?}", e),
+    }
+
+    // Загрузить user.elf с диска
+    static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
+    let mut user_elf: &[u8] = USER_ELF;
+    {
+        let fs = device::fat32::get().unwrap();
+        if let Some((cluster, size, is_dir)) = unsafe { fs.find_entry(fs.root_cluster, "USER.ELF") } {
             if !is_dir && size as usize <= 131072 {
-                let buf_pa = &raw const USER_ELF_BUF as u64;
                 println!("Loading user.elf from disk: {} bytes", size);
+                let buf_pa = &raw const USER_ELF_BUF as u64;
                 match unsafe { fs.read_file(cluster, size, buf_pa) } {
                     Some(n) => {
-                        user_elf = unsafe {
-                            core::slice::from_raw_parts(buf_pa as *const u8, n)
-                        };
+                        user_elf = unsafe { core::slice::from_raw_parts(buf_pa as *const u8, n) };
                         println!("Loaded {} bytes from disk", n);
                     }
-                    None => println!("read_file failed, using include_bytes fallback"),
+                    None => println!("read_file failed, using include_bytes"),
                 }
             }
         }
     }
-
-    // (спать не надо, но переменные живы до конца kmain)
-    let _ = &nvme_opt;
-    let _ = &fat32_fs;
 
     sched::init(boot_as);
     unsafe {

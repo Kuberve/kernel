@@ -15,6 +15,9 @@ pub const SYS_IRQ_ACK:  u64 = sys_num::IRQ_ACK;
 pub const SYS_TRY_SEND: u64 = sys_num::TRY_SEND;
 pub const SYS_TRY_RECV: u64 = sys_num::TRY_RECV;
 pub const SYS_SBRK: u64 = sys_num::SBRK;
+pub const SYS_OPEN:  u64 = sys_num::OPEN;
+pub const SYS_READ:  u64 = sys_num::READ;
+pub const SYS_CLOSE: u64 = sys_num::CLOSE;
 
 /// Отдать CPU добровольно.
 #[allow(dead_code)]
@@ -173,6 +176,46 @@ pub fn sys_sbrk(delta: i64) -> u64 {
         asm!("mov x8, {n}", "svc #0",
             n = const sys_num::SBRK,
             inlateout("x0") delta => ret,
+            out("x8") _);
+    }
+    ret
+}
+
+#[allow(dead_code)]
+pub fn sys_open(path: &str, flags: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!("mov x8, {n}", "svc #0",
+            n = const sys_num::OPEN,
+            inlateout("x0") path.as_ptr() as u64 => ret,
+            in("x1") path.len() as u64,
+            in("x2") flags,
+            out("x8") _);
+    }
+    ret
+}
+
+#[allow(dead_code)]
+pub fn sys_read(fd: i64, buf: *mut u8, len: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!("mov x8, {n}", "svc #0",
+            n = const sys_num::READ,
+            inlateout("x0") fd as u64 => ret,
+            in("x1") buf as u64,
+            in("x2") len,
+            out("x8") _);
+    }
+    ret
+}
+
+#[allow(dead_code)]
+pub fn sys_close(fd: i64) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!("mov x8, {n}", "svc #0",
+            n = const sys_num::CLOSE,
+            inlateout("x0") fd as u64 => ret,
             out("x8") _);
     }
     ret
