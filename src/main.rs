@@ -205,6 +205,19 @@ pub extern "C" fn kmain() -> ! {
                     println!("NVMe: verify FAILED");
                 }
             }
+            // --- Mount FAT32 ---
+            match unsafe { device::fat32::mount(&nvme) } {
+                Ok(fs) => {
+                    println!("FAT32 mounted: label='{}', cluster_size={}, total_clusters={}",
+                        fs.label_str(), fs.bytes_per_sector as u32 * fs.sectors_per_cluster as u32,
+                        (fs.total_sectors - fs.first_data_sector) / fs.sectors_per_cluster as u32);
+                    // Сохранить fs где-то? Пока не нужно.
+                    core::mem::forget(fs);  // чтобы не дропнуть (нет Drop, но на будущее)
+                }
+                Err(e) => {
+                    println!("FAT32 mount failed: {:?}", e);
+                }
+            }
         }
     }
 
