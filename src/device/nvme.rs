@@ -117,3 +117,122 @@ pub unsafe fn init(bar: u64) -> Option<Nvme> {
         cid: 0,
     })
 }
+
+// ============================================================
+// Admin command submission (SQ/CQ ring)
+// ============================================================
+
+pub unsafe fn submit_admin(nvme: &mut Nvme, cmd: &[u32; 16]) -> u32 {
+    // 1. Записать SQE в SQ[nvme.sq_tail % AQ_SIZE]
+    let sq = ASQ as *mut u32;
+    let tail_idx = (nvme.sq_tail % AQ_SIZE) as usize;
+    let entry = sq.add(tail_idx * 16);
+    for i in 0..16 {
+        core::ptr::write_volatile(entry.add(i), cmd[i]);
+    }
+
+    // 2. Ring SQ tail doorbell
+    nvme.sq_tail = (nvme.sq_tail + 1) % AQ_SIZE;
+    let dstrd = ((read64(nvme.bar, REG_CAP) >> 32) & 0xF) as usize;
+    let sq_db_off = REG_DBS + (0 * 4 << dstrd);  // SQ 0
+    let cq_db_off = REG_DBS + ((1 * 4) << dstrd); // CQ 0 (offset 4)
+    write32(nvme.bar, sq_db_off, nvme.sq_tail);
+
+    // 3. Poll CQ
+    let cq = ACQ as *mut u32;
+    loop {
+        let head_idx = (nvme.cq_head % AQ_SIZE) as usize;
+        let entry = cq.add(head_idx * 4);
+        // Читаем статус (dword 3): phase bit в bits 16, status code в 17..31
+        let status_dw = core::ptr::read_volatile(entry.add(3));
+        let phase = ((status_dw >> 16) & 1) != 0;
+        if phase != nvme.cq_phase {
+            // Не готово, крутимся
+            core::arch::asm!("yield", options(nostack, nomem));
+            continue;
+        }
+        // Готово
+        let status_code = (status_dw >> 17) & 0x7FFF;
+        // Обновить CQ head
+        nvme.cq_head = (nvme.cq_head + 1) % AQ_SIZE;
+        if nvme.cq_head == 0 {
+            nvme.cq_phase = !nvme.cq_phase;
+        }
+        // Ring CQ head doorbell
+        write32(nvme.bar, cq_db_off, nvme.cq_head);
+
+        return status_code;
+    }
+}
+
+// ============================================================
+// Identify
+// ============================================================
+
+pub struct IdentifyController {
+    pub model: [u8; 40],
+    pub serial: [u8; 20],
+    pub firmware: [u8; 8],
+    pub nn: u32,   // number of namespaces
+}
+
+pub struct IdentifyNamespace {
+    pub nsze: u64,   // total blocks
+    pub ncap: u64,
+    pub lbads: u8,   // log2(block size)
+}
+
+pub unsafe fn identify_controller(nvme: &mut Nvme, buf_pa: u64) -> Option<IdentifyController> {
+    let mut cmd = [0u32; 16];
+    // dword 0: opcode=0x06, CID=1 (bits 16-31)
+    cmd[0] = 0x06 | (1 << 16);
+    // dword 1: NSID=0
+    cmd[1] = 0;
+    // dword 6-7: PRP1
+    cmd[6] = buf_pa as u32;
+    cmd[7] = (buf_pa >> 32) as u32;
+    // dword 10: CDW10 = CNS 0x01 (identify controller)
+    cmd[10] = 0x01;
+
+    let status = submit_admin(nvme, &cmd);
+    if status != 0 {
+        println!("NVMe: identify controller status={:#x}", status);
+        return None;
+    }
+
+    let data = buf_pa as *const u8;
+
+    // Parse
+    let mut model = [0u8; 40];
+    let mut serial = [0u8; 20];
+    let mut firmware = [0u8; 8];
+    for i in 0..40 { model[i] = core::ptr::read_volatile(data.add(24 + i)); }
+    for i in 0..20 { serial[i] = core::ptr::read_volatile(data.add(4 + i)); }
+    for i in 0..8 { firmware[i] = core::ptr::read_volatile(data.add(64 + i)); }
+
+    let nn = core::ptr::read_volatile(data.add(516) as *const u32);
+
+    Some(IdentifyController { model, serial, firmware, nn })
+}
+
+pub unsafe fn identify_namespace(nvme: &mut Nvme, buf_pa: u64, nsid: u32) -> Option<IdentifyNamespace> {
+    let mut cmd = [0u32; 16];
+    cmd[0] = 0x06 | (2 << 16);  // CID=2
+    cmd[1] = nsid;
+    cmd[6] = buf_pa as u32;
+    cmd[7] = (buf_pa >> 32) as u32;
+    cmd[10] = 0x00;  // CNS = 0x00 (identify namespace)
+
+    let status = submit_admin(nvme, &cmd);
+    if status != 0 {
+        println!("NVMe: identify namespace status={:#x}", status);
+        return None;
+    }
+
+    let data = buf_pa as *const u8;
+    let nsze = core::ptr::read_volatile(data as *const u64);
+    let ncap = core::ptr::read_volatile(data.add(8) as *const u64);
+    let lbads = core::ptr::read_volatile(data.add(128 + 2));
+
+    Some(IdentifyNamespace { nsze, ncap, lbads })
+}

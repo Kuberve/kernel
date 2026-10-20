@@ -122,11 +122,35 @@ pub extern "C" fn kmain() -> ! {
         println!("NVMe CSTS = {:#x}", csts);
     }
     if let Some(bar) = nvme_bar {
-        let _nvme = unsafe { device::nvme::init(bar) };
-        if _nvme.is_some() {
-            println!("NVMe initialized OK");
-        } else {
-            println!("NVMe init FAILED");
+        let mut nvme = match unsafe { device::nvme::init(bar) } {
+            Some(n) => n,
+            None => {
+                println!("NVMe init FAILED");
+                panic!("NVMe init failed");
+            }
+        };
+        println!("NVMe initialized OK");
+
+        // Identify Controller (CNS=0x01)
+        let id_ctrl_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page for identify") };
+        unsafe { core::ptr::write_bytes(id_ctrl_pa as *mut u8, 0, 4096); }
+        if let Some(id) = unsafe { device::nvme::identify_controller(&mut nvme, id_ctrl_pa as u64) } {
+            let model = core::str::from_utf8(&id.model).unwrap_or("?").trim_end();
+            let serial = core::str::from_utf8(&id.serial).unwrap_or("?").trim_end();
+            let fw = core::str::from_utf8(&id.firmware).unwrap_or("?").trim_end();
+            println!("NVMe model: '{}'", model);
+            println!("NVMe serial: '{}'", serial);
+            println!("NVMe firmware: '{}'", fw);
+            println!("NVMe namespaces: {}", id.nn);
+        }
+
+        // Identify Namespace 1 (CNS=0x00)
+        let id_ns_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page for ns") };
+        unsafe { core::ptr::write_bytes(id_ns_pa as *mut u8, 0, 4096); }
+        if let Some(ns) = unsafe { device::nvme::identify_namespace(&mut nvme, id_ns_pa as u64, 1) } {
+            println!("NVMe NS1: nsze={} blocks, lbads={} (block size = {})",
+                ns.nsze, ns.lbads, 1u64 << ns.lbads);
+            println!("NVMe NS1: capacity = {} bytes", ns.nsze * (1u64 << ns.lbads));
         }
     }
 
