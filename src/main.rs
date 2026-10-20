@@ -94,7 +94,7 @@ pub extern "C" fn kmain() -> ! {
     println!("phys: heap from {:#x} to {:#x}", kernel_end, ram_end);
     unsafe { crate::arch::aarch64::phys::init(kernel_end, ram_end); }
 
-    let boot_as = unsafe { crate::arch::aarch64::mmu::create_as() };
+    let boot_as = unsafe { crate::arch::aarch64::mmu::create_as(0) };
     unsafe { crate::arch::aarch64::mmu::activate(&boot_as); }
     unsafe { crate::arch::aarch64::mmu::enable(); }
     println!("MMU enabled.");

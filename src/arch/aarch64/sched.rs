@@ -98,7 +98,7 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
         blocked_on_send: usize::MAX,
         id: id as u32,
         name,
-        as_: crate::arch::aarch64::mmu::create_as(),
+        as_: crate::arch::aarch64::mmu::create_as(id),
     };
 
     println!("spawned '{}' id={} sp={:#x}", name, id, sp);
@@ -133,7 +133,7 @@ pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) 
         blocked_on_send: usize::MAX,
         id: id as u32,
         name,
-        as_: crate::arch::aarch64::mmu::create_as(),
+        as_: crate::arch::aarch64::mmu::create_as(id),
     };
 
     println!("spawned '{}' (EL0) id={} ksp={:#x} usp={:#x}", name, id, sp, usp);

@@ -222,7 +222,26 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
         }
         syscall::SYS_SEND => {
             let ptr = a1 as *const crate::arch::aarch64::ipc::Message;
-            let msg = *ptr;
+            let mut msg = *ptr;
+
+            // Если WRITE (tag=1): скопировать байты из user ptr в msg.data
+            // data[0] = ptr, data[1] = len → после: data[0] = len, data[1..7] = bytes
+            if msg.tag == 1 {
+                let src = msg.data[0] as *const u8;
+                let len = msg.data[1] as usize;
+                if len > 48 {
+                    ctx.x0 = u64::MAX;
+                    return old_sp;
+                }
+                let mut new_data = [0u64; 7];
+                new_data[0] = len as u64;
+                let dst = &mut new_data[1] as *mut u64 as *mut u8;
+                for i in 0..len {
+                    *dst.add(i) = *src.add(i);
+                }
+                msg.data = new_data;
+            }
+
             let ok = sched::ipc_send_blocking(a0 as usize, msg);
             ctx.x0 = if ok { 0 } else { u64::MAX };
             old_sp
@@ -241,8 +260,25 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
         }
         syscall::SYS_TRY_SEND => {
             let ptr = a1 as *const crate::arch::aarch64::ipc::Message;
-            let msg = *ptr;
-            let ok = sched::ipc_send(a0 as usize, msg);  // non-blocking
+            let mut msg = *ptr;
+
+            if msg.tag == 1 {
+                let src = msg.data[0] as *const u8;
+                let len = msg.data[1] as usize;
+                if len > 48 {
+                    ctx.x0 = u64::MAX;
+                    return old_sp;
+                }
+                let mut new_data = [0u64; 7];
+                new_data[0] = len as u64;
+                let dst = &mut new_data[1] as *mut u64 as *mut u8;
+                for i in 0..len {
+                    *dst.add(i) = *src.add(i);
+                }
+                msg.data = new_data;
+            }
+
+            let ok = sched::ipc_send(a0 as usize, msg);
             ctx.x0 = if ok { 0 } else { u64::MAX };
             old_sp
         }

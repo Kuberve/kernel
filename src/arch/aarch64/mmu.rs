@@ -61,7 +61,7 @@ pub unsafe fn enable() {
 /// Создать новое адресное пространство. Выделяет 4 страницы
 /// под L0, L1, L2, L2_DEV. Пока user-регионы смотрят на те же
 /// физические страницы, что и все остальные — изоляции нет.
-pub unsafe fn create_as() -> AddressSpace {
+pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
     let l0_pa = phys::alloc_page().expect("no page for L0");
     let l1_pa = phys::alloc_page().expect("no page for L1");
     let l2_pa = phys::alloc_page().expect("no page for L2");
@@ -81,7 +81,7 @@ pub unsafe fn create_as() -> AddressSpace {
     l1.entries[0] = l2_dev_pa as u64 | TABLE;
     l1.entries[1] = l2_pa as u64 | TABLE;
 
-    // Device region: все EL1, кроме UART
+    // Device region
     for i in 0..512 {
         let pa = (i as u64) * 0x200000;
         l2_dev.entries[i] = pa | ATTR_DEVICE | AF | PXN | UXN | BLOCK;
@@ -93,11 +93,18 @@ pub unsafe fn create_as() -> AddressSpace {
     l2.entries[0] = 0x40000000u64 | ATTR_NORMAL | AF | SH_INNER | BLOCK;
     l2.entries[1] = 0x40200000u64 | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
 
-    // User regions (пока идентичные для всех)
+    // User code (L2[2]) — общий для всех (0x40400000)
     l2.entries[2] = 0x40400000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | PXN | BLOCK;
-    l2.entries[3] = 0x40600000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
-    l2.entries[4] = 0x40800000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
 
+    // User stack (L2[3]) — общий регион (0x40600000), разные стеки внутри
+    l2.entries[3] = 0x40600000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
+
+    // User heap (L2[4]) — СВОЙ для каждого процесса
+    // tid=0 → 0x40800000, tid=1 → 0x40A00000, ..., tid=15 → 0x42600000
+    let heap_region = 0x40800000u64 + (thread_id as u64) * 0x200000;
+    l2.entries[4] = heap_region | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
+
+    // L2[5..512] — kernel identity (общие для всех)
     for i in 5..512 {
         let pa = 0x40000000u64 + (i as u64) * 0x200000;
         l2.entries[i] = pa | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
