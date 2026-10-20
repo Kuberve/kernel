@@ -58,9 +58,7 @@ pub unsafe fn enable() {
     asm!("isb");
 }
 
-/// Создать новое адресное пространство. Выделяет 4 страницы
-/// под L0, L1, L2, L2_DEV. Пока user-регионы смотрят на те же
-/// физические страницы, что и все остальные — изоляции нет.
+/// Создать новое адресное пространство.
 pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
     let l0_pa = phys::alloc_page().expect("no page for L0");
     let l1_pa = phys::alloc_page().expect("no page for L1");
@@ -96,8 +94,10 @@ pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
     // User code (L2[2]) — общий для всех (0x40400000)
     l2.entries[2] = 0x40400000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | PXN | BLOCK;
 
-    // User stack (L2[3]) — общий регион (0x40600000), разные стеки внутри
-    l2.entries[3] = 0x40600000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
+    // User stack (L2[3]) — свой 2MB регион на процесс
+    // tid=0 → 0x46000000, tid=1 → 0x46200000, ..., tid=15 → 0x47E00000
+    let stack_region = 0x46000000u64 + (thread_id as u64) * 0x200000;
+    l2.entries[3] = stack_region | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
 
     // User heap (L2[4]) — СВОЙ для каждого процесса
     // tid=0 → 0x40800000, tid=1 → 0x40A00000, ..., tid=15 → 0x42600000

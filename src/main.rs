@@ -90,7 +90,9 @@ pub extern "C" fn kmain() -> ! {
 
     extern "C" { static __kernel_end: u8; }
     let kernel_end = unsafe { &__kernel_end as *const _ as usize };
-    let ram_end = 0x40000000 + 128 * 1024 * 1024;
+    // 96MB под kernel + heap (phys allocator). Stack regions (0x46000000+) — за пределами,
+    // mmu::create_as использует их по фиксированным адресам.
+    let ram_end = 0x46000000;
     println!("phys: heap from {:#x} to {:#x}", kernel_end, ram_end);
     unsafe { crate::arch::aarch64::phys::init(kernel_end, ram_end); }
 
@@ -133,10 +135,10 @@ pub extern "C" fn kmain() -> ! {
     sched::init();
     unsafe {
         sched::spawn("A", 1, thread_a);
-        sched::spawn("B", 2, thread_b);           // понизили до 2, чтобы user получал CPU
+        sched::spawn("B", 2, thread_b);
         sched::spawn_el0("uart",    2, user_entry, 0x40700000);
-        sched::spawn_el0("client1", 2, user_entry, 0x40780000);
-        sched::spawn_el0("client2", 2, user_entry, 0x407C0000);
+        sched::spawn_el0("client1", 2, user_entry, 0x40700000);
+        sched::spawn_el0("client2", 2, user_entry, 0x40700000);
     }
 
     timer::start(1);
