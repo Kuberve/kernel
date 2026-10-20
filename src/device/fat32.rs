@@ -114,13 +114,22 @@ impl Fat32 {
         s.trim_end()
     }
 
-        /// Прочитать один кластер в буфер `buf_pa`.
+    /// Прочитать один кластер в буфер `buf_pa`.
     pub unsafe fn read_cluster(&self, cluster: u32, buf_pa: u64) -> bool {
         let nvme = &*self.bar_nvme;
         let start_sector = self.first_data_sector as u64
             + (cluster as u64 - 2) * self.sectors_per_cluster as u64;
         let num_sectors = self.sectors_per_cluster as u16;
         read_blocks(nvme, 1, start_sector, num_sectors, buf_pa)
+    }
+
+    /// Записать один кластер из буфера `buf_pa` (512 байт).
+    pub unsafe fn write_cluster(&self, cluster: u32, buf_pa: u64) -> bool {
+        let nvme = &*self.bar_nvme;
+        let start_sector = self.first_data_sector as u64
+            + (cluster as u64 - 2) * self.sectors_per_cluster as u64;
+        let num_sectors = self.sectors_per_cluster as u16;
+        crate::device::nvme::write_blocks(nvme, 1, start_sector, num_sectors, buf_pa)
     }
 
     /// Прочитать FAT entry → следующий кластер. 0x0FFFFFFF = EOC.

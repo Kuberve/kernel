@@ -18,6 +18,7 @@ pub const SYS_SBRK: u64 = sys_num::SBRK;
 pub const SYS_OPEN:  u64 = sys_num::OPEN;
 pub const SYS_READ:  u64 = sys_num::READ;
 pub const SYS_CLOSE: u64 = sys_num::CLOSE;
+pub const SYS_WRITE_FILE: u64 = sys_num::WRITE_FILE;
 
 /// Отдать CPU добровольно.
 #[allow(dead_code)]
@@ -216,6 +217,20 @@ pub fn sys_close(fd: i64) -> i64 {
         asm!("mov x8, {n}", "svc #0",
             n = const sys_num::CLOSE,
             inlateout("x0") fd as u64 => ret,
+            out("x8") _);
+    }
+    ret
+}
+
+#[allow(dead_code)]
+pub fn sys_write_file(fd: i64, buf: *const u8, len: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        asm!("mov x8, {n}", "svc #0",
+            n = const sys_num::WRITE_FILE,
+            inlateout("x0") fd as u64 => ret,
+            in("x1") buf as u64,
+            in("x2") len,
             out("x8") _);
     }
     ret
