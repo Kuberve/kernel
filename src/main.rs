@@ -11,6 +11,8 @@ mod allocator;
 mod arch;
 use crate::arch::aarch64::{gic, timer, vectors, sched};
 
+mod device;
+
 mod uart;
 mod panic;
 mod loader;
@@ -100,6 +102,25 @@ pub extern "C" fn kmain() -> ! {
     unsafe { crate::arch::aarch64::mmu::activate(&boot_as); }
     unsafe { crate::arch::aarch64::mmu::enable(); }
     println!("MMU enabled.");
+
+    let nvme_bar = unsafe { device::pci::init() };
+    if let Some(bar) = nvme_bar {
+        println!("NVMe BAR0 = {:#x}", bar);
+
+        // CAP (offset 0x0), 64-bit
+        let cap_lo = unsafe { core::ptr::read_volatile(bar as *const u32) };
+        let cap_hi = unsafe { core::ptr::read_volatile((bar + 4) as *const u32) };
+        let cap = ((cap_hi as u64) << 32) | (cap_lo as u64);
+        println!("NVMe CAP = {:#x}", cap);
+
+        // VS (offset 0x8): version register, 32-bit
+        let vs = unsafe { core::ptr::read_volatile((bar + 8) as *const u32) };
+        println!("NVMe VS = {:#x}", vs);
+
+        // CSTS (offset 0x1C): Controller Status
+        let csts = unsafe { core::ptr::read_volatile((bar + 0x1C) as *const u32) };
+        println!("NVMe CSTS = {:#x}", csts);
+    }
 
     // Тест
     unsafe {

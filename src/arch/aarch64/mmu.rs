@@ -27,7 +27,7 @@ const MAIR: u64 = 0xFF | (0x00 << 8);
 const TCR: u64 = (16 << 0)
     | (1 << 8) | (1 << 10) | (3 << 12) | (0 << 14)
     | (16 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30)
-    | (1 << 32);
+    | (2 << 32);   // IPS = 2 (40-bit PA, 1 TB)
 
 pub const BLOCK: u64 = 0b01;
 pub const TABLE: u64 = 0b11;
@@ -79,6 +79,15 @@ pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
     l0.entries[0] = l1_pa as u64 | TABLE;
     l1.entries[0] = l2_dev_pa as u64 | TABLE;
     l1.entries[1] = l2_pa as u64 | TABLE;
+
+    // ECAM for PCIe (QEMU virt: 0x4010000000, 256 MiB)
+    // 0x4010000000 >> 30 = 0x100 = 256, попадает в L1[256]
+    l1.entries[256] = 0x4000000000u64
+        | ATTR_DEVICE
+        | AF
+        | PXN
+        | UXN
+        | BLOCK;
 
     // Device region
     for i in 0..512 {
