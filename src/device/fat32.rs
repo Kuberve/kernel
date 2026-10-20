@@ -113,4 +113,108 @@ impl Fat32 {
         let s = core::str::from_utf8(&self.label).unwrap_or("?");
         s.trim_end()
     }
+
+        /// Прочитать один кластер в буфер `buf_pa`.
+    pub unsafe fn read_cluster(&self, cluster: u32, buf_pa: u64) -> bool {
+        let nvme = &*self.bar_nvme;
+        let start_sector = self.first_data_sector as u64
+            + (cluster as u64 - 2) * self.sectors_per_cluster as u64;
+        let num_sectors = self.sectors_per_cluster as u16;
+        read_blocks(nvme, 1, start_sector, num_sectors, buf_pa)
+    }
+
+    /// Прочитать FAT entry → следующий кластер. 0x0FFFFFFF = EOC.
+    pub unsafe fn next_cluster(&self, cluster: u32) -> u32 {
+        let nvme = &*self.bar_nvme;
+        let fat_sector = self.reserved_sectors as u64
+            + ((cluster as u64) * 4) / self.bytes_per_sector as u64;
+        let buf_pa = match phys::alloc_page() {
+            Some(p) => p,
+            None => return 0x0FFFFFFF,
+        };
+        if !read_blocks(nvme, 1, fat_sector, 1, buf_pa as u64) {
+            return 0x0FFFFFFF;
+        }
+        let offset_in_sector = ((cluster as usize) * 4) % self.bytes_per_sector as usize;
+        let buf = core::slice::from_raw_parts(buf_pa as *const u8, self.bytes_per_sector as usize);
+        let val = read_u32(buf, offset_in_sector);
+        val & 0x0FFFFFFF
+    }
+
+    /// Прочитать содержимое директории (начиная с start_cluster), вывести entries.
+    pub unsafe fn readdir(&self, start_cluster: u32) {
+        let mut cluster = start_cluster;
+        let mut total = 0;
+        let max_entries = 500;
+
+        while cluster >= 2 && cluster < 0x0FFFFFF8 && total < max_entries {
+            let buf_pa = match phys::alloc_page() {
+                Some(p) => p,
+                None => return,
+            };
+            if !self.read_cluster(cluster, buf_pa as u64) {
+                println!("FAT32: read cluster {} failed", cluster);
+                return;
+            }
+
+            let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+            let entries_per_cluster = cluster_size / 32;
+            let buf = core::slice::from_raw_parts(buf_pa as *const u8, cluster_size);
+
+            for i in 0..entries_per_cluster {
+                let e = &buf[i * 32..(i + 1) * 32];
+                let first = e[0];
+                if first == 0x00 {
+                    return;  // конец директории
+                }
+                if first == 0xE5 {
+                    continue;  // удалён
+                }
+                let attr = e[11];
+                if attr == 0x0F {
+                    continue;  // LFN, игнорируем
+                }
+                if attr & 0x08 != 0 {
+                    continue;  // volume label
+                }
+
+                // Имя 8.3
+                let mut name = [0u8; 8];
+                let mut n = 0;
+                for j in 0..8 {
+                    if e[j] == b' ' { break; }
+                    name[n] = e[j]; n += 1;
+                }
+                let mut ext = [0u8; 3];
+                let mut m = 0;
+                for j in 8..11 {
+                    if e[j] == b' ' { break; }
+                    ext[m] = e[j]; m += 1;
+                }
+
+                let name_str = core::str::from_utf8(&name[..n]).unwrap_or("?");
+                let ext_str = core::str::from_utf8(&ext[..m]).unwrap_or("");
+
+                let cluster_hi = read_u16(e, 20) as u32;
+                let cluster_lo = read_u16(e, 26) as u32;
+                let file_cluster = (cluster_hi << 16) | cluster_lo;
+                let size = read_u32(e, 28);
+                let is_dir = attr & 0x10 != 0;
+
+                if is_dir {
+                    println!("  [DIR]  {:<12} cluster={}", name_str, file_cluster);
+                } else if m > 0 {
+                    println!("  [FILE] {}.{:<3} size={:<6} cluster={}",
+                        name_str, ext_str, size, file_cluster);
+                } else {
+                    println!("  [FILE] {:<12} size={:<6} cluster={}",
+                        name_str, size, file_cluster);
+                }
+                total += 1;
+                if total >= max_entries { return; }
+            }
+
+            cluster = self.next_cluster(cluster);
+        }
+    }
 }
