@@ -15,14 +15,14 @@ fn ecam_addr(bus: u8, dev: u8, func: u8, reg: u16) -> u64 {
         + (reg as u64)
 }
 
-fn config_read32(bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
+pub fn config_read32(bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
     unsafe {
         let ptr = ecam_addr(bus, dev, func, reg) as *const u32;
         core::ptr::read_volatile(ptr)
     }
 }
 
-fn config_write32(bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
+pub fn config_write32(bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
     unsafe {
         let ptr = ecam_addr(bus, dev, func, reg) as *mut u32;
         core::ptr::write_volatile(ptr, val);
@@ -98,6 +98,12 @@ pub unsafe fn init() -> Option<u64> {
 
                     return Some(bar_pa);
                 }
+                // Virtio-net: vendor=0x1AF4
+                if vendor == 0x1AF4 {
+                    println!("PCIe: virtio-net found at bus={} dev={} func={} device={:#x}",
+                             bus, dev, func, config_read32(bus, dev, func, 0x00) >> 16);
+                    return Some(bus as u64 | ((dev as u64) << 8) | ((func as u64) << 16));
+                }
             }
         }
     }
@@ -106,19 +112,47 @@ pub unsafe fn init() -> Option<u64> {
     None
 }
 
+/// Найти virtio-net контроллер. Возвращает (bus, dev, func).
+pub unsafe fn find_virtio_net() -> Option<(u8, u8, u8)> {
+    for bus in 0..=255u8 {
+        for dev in 0..32u8 {
+            for func in 0..8u8 {
+                let vendor = config_read32(bus, dev, func, 0x00) & 0xFFFF;
+                if vendor != 0x1AF4 { continue; }
+
+                let device = (config_read32(bus, dev, func, 0x00) >> 16) as u16;
+                println!("PCIe: virtio device={:#x} at bus={} dev={} func={}",
+                         device, bus, dev, func);
+
+                // Включить Memory Space + Bus Master
+                let mut cmd = config_read32(bus, dev, func, 0x04);
+                cmd |= (1 << 1) | (1 << 2);
+                config_write32(bus, dev, func, 0x04, cmd);
+
+                return Some((bus, dev, func));
+            }
+        }
+    }
+    None
+}
+
 /// Прочитать размер BAR через запись всех единиц.
 /// Возвращает маску размера (последний установленный бит).
-fn bar_size_mask(bus: u8, dev: u8, func: u8, bar_reg: u16) -> u32 {
+pub fn bar_size_mask(bus: u8, dev: u8, func: u8, bar_reg: u16) -> u32 {
     let orig = config_read32(bus, dev, func, bar_reg);
+    if orig & 1 != 0 {
+        // I/O space — не пишем 0xFFFFFFFF, возвращаем 0 (не используем)
+        return 0;
+    }
     config_write32(bus, dev, func, bar_reg, 0xFFFFFFFF);
     let mask = config_read32(bus, dev, func, bar_reg);
     config_write32(bus, dev, func, bar_reg, orig);
-    mask & !0xF   // младшие 4 бита — флаги, не часть маски
+    mask & !0xF
 }
 
 /// Найти свободный регион MMIO для 64-bit BAR.
 /// Сканируем 0x10000000..0x40000000 с шагом size, проверяем что не пересекается.
-unsafe fn assign_bar64(bus: u8, dev: u8, func: u8, bar_reg: u16, size: u64) -> Option<u64> {
+pub unsafe fn assign_bar64(bus: u8, dev: u8, func: u8, bar_reg: u16, size: u64) -> Option<u64> {
     if size == 0 || (size & (size - 1)) != 0 {
         return None;  // должно быть степенью двойки
     }

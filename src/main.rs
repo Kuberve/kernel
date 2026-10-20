@@ -149,6 +149,15 @@ pub extern "C" fn kmain() -> ! {
         Err(e) => panic!("FAT32 mount failed: {:?}", e),
     }
 
+    // --- virtio-net ---
+    println!("=== Network ===");
+    let _virtio_net = unsafe { device::virtio_net::init() };
+    if _virtio_net.is_some() {
+        println!("virtio-net initialized");
+    } else {
+        println!("virtio-net NOT FOUND");
+    }
+
     // Загрузить user.elf с диска
     static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
     let mut user_elf: &[u8] = USER_ELF;
