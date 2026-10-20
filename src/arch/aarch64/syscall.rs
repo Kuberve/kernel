@@ -14,6 +14,7 @@ pub const SYS_RECV:     u64 = sys_num::RECV;
 pub const SYS_IRQ_ACK:  u64 = sys_num::IRQ_ACK;
 pub const SYS_TRY_SEND: u64 = sys_num::TRY_SEND;
 pub const SYS_TRY_RECV: u64 = sys_num::TRY_RECV;
+pub const SYS_SBRK: u64 = sys_num::SBRK;
 
 /// Отдать CPU добровольно.
 #[allow(dead_code)]
@@ -160,6 +161,18 @@ pub fn sys_try_recv(msg: *mut Message) -> i64 {
         asm!("mov x8, {n}", "svc #0",
             n = const SYS_TRY_RECV,
             inlateout("x0") msg as u64 => ret,
+            out("x8") _);
+    }
+    ret
+}
+
+#[allow(dead_code)]
+pub fn sys_sbrk(delta: i64) -> u64 {
+    let ret: u64;
+    unsafe {
+        asm!("mov x8, {n}", "svc #0",
+            n = const sys_num::SBRK,
+            inlateout("x0") delta => ret,
             out("x8") _);
     }
     ret

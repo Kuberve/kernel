@@ -290,6 +290,11 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             }
             old_sp
         }
+        syscall::SYS_SBRK => {
+            let delta = a0 as i64;
+            ctx.x0 = sbrk_impl(delta);
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(),
         _ => {
             crate::println!("unknown syscall {}", num);
@@ -297,6 +302,27 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             old_sp
         }
     }
+}
+
+unsafe fn sbrk_impl(delta: i64) -> u64 {
+    use crate::arch::aarch64::sched;
+    let cur = sched::current_pid();
+    if cur == 0 {
+        return u64::MAX;  // idle не имеет heap
+    }
+    let old_brk = sched::thread_brk(cur as usize);
+    if old_brk == 0 {
+        return u64::MAX;
+    }
+
+    let new_brk = (old_brk as i64).wrapping_add(delta) as u64;
+    // Проверка границ: heap region 0x40800000..0x40A00000
+    if new_brk < 0x40800000 || new_brk > 0x40A00000 {
+        return u64::MAX;
+    }
+
+    sched::set_thread_brk(cur as usize, new_brk);
+    old_brk
 }
 
 #[no_mangle]

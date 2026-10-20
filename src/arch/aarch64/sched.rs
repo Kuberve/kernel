@@ -28,6 +28,7 @@ pub struct Thread {
     pub priority: u8,
     pub wait_ticks: u32,
     pub blocked_on_send: usize,
+    pub brk: u64,
     pub id: u32,
     pub name: &'static str,
     pub as_: crate::arch::aarch64::mmu::AddressSpace,
@@ -41,6 +42,7 @@ const EMPTY_THREAD: Thread = Thread {
     priority: 0,
     wait_ticks: 0,
     blocked_on_send: usize::MAX,
+    brk: 0,
     id: 0,
     name: "",
     as_: crate::arch::aarch64::mmu::EMPTY_AS,
@@ -100,6 +102,7 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
         priority,
         wait_ticks: 0,
         blocked_on_send: usize::MAX,
+        brk: 0,
         id: id as u32,
         name,
         as_: crate::arch::aarch64::mmu::create_as(id),
@@ -149,6 +152,7 @@ pub unsafe fn spawn_el0(
         priority,
         wait_ticks: 0,
         blocked_on_send: usize::MAX,
+        brk: 0x40800000,
         id: id as u32,
         name,
         as_,
@@ -460,4 +464,14 @@ pub unsafe fn ipc_recv_block() -> Message {
         }
         block_on_ipc();
     }
+}
+
+pub unsafe fn thread_brk(pid: usize) -> u64 {
+    if pid >= MAX_THREADS { return 0; }
+    THREADS[pid].brk
+}
+
+pub unsafe fn set_thread_brk(pid: usize, new: u64) {
+    if pid >= MAX_THREADS { return; }
+    THREADS[pid].brk = new;
 }
