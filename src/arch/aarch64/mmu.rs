@@ -1,115 +1,122 @@
 use core::arch::asm;
+use crate::arch::aarch64::phys;
 
-/// 512 записей по 8 байт = 4KB, выровнено на 4KB.
 #[repr(C, align(4096))]
-struct PageTable {
+pub struct PageTable {
     entries: [u64; 512],
 }
 
-static mut L0: PageTable = PageTable { entries: [0; 512] };
-static mut L1: PageTable = PageTable { entries: [0; 512] };
-static mut L2: PageTable = PageTable { entries: [0; 512] };
-static mut L2_DEV: PageTable = PageTable { entries: [0; 512] };
+pub const PAGE_SIZE: usize = 4096;
 
-// MAIR: Attr0 = Normal WB (0xFF), Attr1 = Device nGnRnE (0x00)
+#[derive(Clone, Copy)]
+pub struct AddressSpace {
+    pub l0_pa: u64,
+    pub l1_pa: u64,
+    pub l2_pa: u64,
+    pub l2_dev_pa: u64,
+    pub valid: bool,
+}
+
+pub const EMPTY_AS: AddressSpace = AddressSpace {
+    l0_pa: 0, l1_pa: 0, l2_pa: 0, l2_dev_pa: 0, valid: false,
+};
+
 const MAIR: u64 = 0xFF | (0x00 << 8);
 
-// TCR для 48-bit VA, 4KB granule, WB cache
-// T0SZ=16, IRGN0=WB, ORGN0=WB, SH0=inner, TG0=4K
-// T1SZ=16, IRGN1=WB, ORGN1=WB, SH1=inner, TG1=4K
-// IPS=1 (36-bit PA)
 const TCR: u64 = (16 << 0)
-    | (1 << 8)   // IRGN0
-    | (1 << 10)  // ORGN0
-    | (3 << 12)  // SH0
-    | (0 << 14)  // TG0 = 4KB
-    | (16 << 16) // T1SZ
-    | (1 << 24)  // IRGN1
-    | (1 << 26)  // ORGN1
-    | (3 << 28)  // SH1
-    | (2 << 30)  // TG1 = 4KB
-    | (1 << 32); // IPS = 36-bit
+    | (1 << 8) | (1 << 10) | (3 << 12) | (0 << 14)
+    | (16 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30)
+    | (1 << 32);
 
-// Descriptor bits для 1GB block на L1
-const BLOCK: u64 = 0b01;
-const AF: u64 = 1 << 10;
-const SH_INNER: u64 = 3 << 8;
-const ATTR_NORMAL: u64 = 0 << 2;
-const ATTR_DEVICE: u64 = 1 << 2;
-const PXN: u64 = 1 << 53;
-const UXN: u64 = 1 << 54;
+pub const BLOCK: u64 = 0b01;
+pub const TABLE: u64 = 0b11;
+pub const AF: u64 = 1 << 10;
+pub const SH_INNER: u64 = 3 << 8;
+pub const ATTR_NORMAL: u64 = 0 << 2;
+pub const ATTR_DEVICE: u64 = 1 << 2;
+pub const PXN: u64 = 1 << 53;
+pub const UXN: u64 = 1 << 54;
+pub const AP_RW_ALL: u64 = 1 << 6;
 
+/// Глобальная инициализация: MAIR, TCR. TTBR0 ставится через activate().
 pub unsafe fn init() {
-    let l0 = &mut *core::ptr::addr_of_mut!(L0);
-    let l1 = &mut *core::ptr::addr_of_mut!(L1);
+    asm!("msr mair_el1, {}", in(reg) MAIR);
+    asm!("msr tcr_el1, {}", in(reg) TCR);
+    asm!("dsb sy");
+    asm!("isb");
+}
 
-    // L0[0] -> L1 (table descriptor: lower bits 0b11)
-    let l1_pa = l1 as *mut _ as u64;
-    l0.entries[0] = l1_pa | 0b11;
+/// Включить MMU (SCTLR.M, C, I).
+pub unsafe fn enable() {
+    let mut sctlr: u64;
+    asm!("mrs {}, sctlr_el1", out(reg) sctlr);
+    sctlr |= 1;
+    sctlr |= 1 << 2;
+    sctlr |= 1 << 12;
+    sctlr &= !(1 << 19);
+    asm!("msr sctlr_el1, {}", in(reg) sctlr);
+    asm!("isb");
+}
 
-    // L1[0] = 1GB device
-    // Device region: L1[0] → L2_DEV, для тонких permissions
-    let l2_dev = &mut *core::ptr::addr_of_mut!(L2_DEV);
-    l1.entries[0] = l2_dev as *mut _ as u64 | 0b11;
+/// Создать новое адресное пространство. Выделяет 4 страницы
+/// под L0, L1, L2, L2_DEV. Пока user-регионы смотрят на те же
+/// физические страницы, что и все остальные — изоляции нет.
+pub unsafe fn create_as() -> AddressSpace {
+    let l0_pa = phys::alloc_page().expect("no page for L0");
+    let l1_pa = phys::alloc_page().expect("no page for L1");
+    let l2_pa = phys::alloc_page().expect("no page for L2");
+    let l2_dev_pa = phys::alloc_page().expect("no page for L2_DEV");
 
-    // Все device-блоки: AP=00 (EL1 only), non-exec
+    let l0 = &mut *(l0_pa as *mut PageTable);
+    let l1 = &mut *(l1_pa as *mut PageTable);
+    let l2 = &mut *(l2_pa as *mut PageTable);
+    let l2_dev = &mut *(l2_dev_pa as *mut PageTable);
+
+    l0.entries = [0; 512];
+    l1.entries = [0; 512];
+    l2.entries = [0; 512];
+    l2_dev.entries = [0; 512];
+
+    l0.entries[0] = l1_pa as u64 | TABLE;
+    l1.entries[0] = l2_dev_pa as u64 | TABLE;
+    l1.entries[1] = l2_pa as u64 | TABLE;
+
+    // Device region: все EL1, кроме UART
     for i in 0..512 {
         let pa = (i as u64) * 0x200000;
         l2_dev.entries[i] = pa | ATTR_DEVICE | AF | PXN | UXN | BLOCK;
     }
-
-    // UART at 0x09000000 (2MB region 0x09000000-0x091FFFFF)
-    // Index: 0x09000000 / 0x200000 = 72
-    // AP=01 (EL1+EL0), non-exec
     l2_dev.entries[72] = 0x09000000u64
-        | ATTR_DEVICE | AF | (1 << 6) | PXN | UXN | BLOCK;
+        | ATTR_DEVICE | AF | AP_RW_ALL | PXN | UXN | BLOCK;
 
-    // L1[1] → L2
-    let l2 = &mut *core::ptr::addr_of_mut!(L2);
-    l1.entries[1] = l2 as *mut _ as u64 | 0b11;
+    // Kernel code/data
+    l2.entries[0] = 0x40000000u64 | ATTR_NORMAL | AF | SH_INNER | BLOCK;
+    l2.entries[1] = 0x40200000u64 | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
 
-    // Kernel code (L2[0]): AP=00 (EL1 only), exec allowed
-    l2.entries[0] = 0x40000000u64
-        | ATTR_NORMAL | AF | SH_INNER | BLOCK;
+    // User regions (пока идентичные для всех)
+    l2.entries[2] = 0x40400000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | PXN | BLOCK;
+    l2.entries[3] = 0x40600000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
+    l2.entries[4] = 0x40800000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
 
-    // Kernel data/heap (L2[1]): AP=00, non-exec
-    l2.entries[1] = 0x40200000u64
-        | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
-
-    // User code (L2[2]): AP=01 (EL1+EL0), exec only for EL0
-    l2.entries[2] = 0x40400000u64
-        | ATTR_NORMAL | AF | SH_INNER | (1 << 6) | PXN | BLOCK;
-
-    // User data (L2[3]): AP=01, non-exec
-    l2.entries[3] = 0x40600000u64
-        | ATTR_NORMAL | AF | SH_INNER | (1 << 6) | UXN | PXN | BLOCK;
-
-        // User heap (L2[4]): AP=01, non-exec
-    l2.entries[4] = 0x40800000u64
-        | ATTR_NORMAL | AF | SH_INNER | (1 << 6) | UXN | PXN | BLOCK;
-
-    // Rest (L2[5..512]): identity, non-exec, EL1 only
     for i in 5..512 {
         let pa = 0x40000000u64 + (i as u64) * 0x200000;
         l2.entries[i] = pa | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
     }
 
-    // Настройка регистров MMU
-    asm!("msr mair_el1, {}", in(reg) MAIR);
-    asm!("msr tcr_el1, {}", in(reg) TCR);
+    AddressSpace {
+        l0_pa: l0_pa as u64,
+        l1_pa: l1_pa as u64,
+        l2_pa: l2_pa as u64,
+        l2_dev_pa: l2_dev_pa as u64,
+        valid: true,
+    }
+}
 
-    let l0_pa = l0 as *mut _ as u64;
-    asm!("msr ttbr0_el1, {}", in(reg) l0_pa);
-    asm!("msr ttbr1_el1, {}", in(reg) l0_pa);  // тот же набор — на всякий случай
-
-    // Барьеры: гарантируем, что таблицы и регистры записаны до включения
+/// Активировать AS: записать TTBR0 и сбросить TLB.
+pub unsafe fn activate(as_: &AddressSpace) {
+    asm!("msr ttbr0_el1, {}", in(reg) as_.l0_pa);
     asm!("dsb sy");
-    asm!("isb");
-
-    // Включаем MMU: SCTLR_EL1.M = 1
-    let mut sctlr: u64;
-    asm!("mrs {}, sctlr_el1", out(reg) sctlr);
-    sctlr |= 1;
-    asm!("msr sctlr_el1, {}", in(reg) sctlr);
+    asm!("tlbi vmalle1");
+    asm!("dsb sy");
     asm!("isb");
 }

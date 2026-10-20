@@ -29,6 +29,7 @@ pub struct Thread {
     pub blocked_on_send: usize,
     pub id: u32,
     pub name: &'static str,
+    pub as_: crate::arch::aarch64::mmu::AddressSpace,
 }
 
 const EMPTY_THREAD: Thread = Thread {
@@ -41,6 +42,7 @@ const EMPTY_THREAD: Thread = Thread {
     blocked_on_send: usize::MAX,
     id: 0,
     name: "",
+    as_: crate::arch::aarch64::mmu::EMPTY_AS,
 };
 
 static mut THREADS: [Thread; MAX_THREADS] = [EMPTY_THREAD; MAX_THREADS];
@@ -96,6 +98,7 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
         blocked_on_send: usize::MAX,
         id: id as u32,
         name,
+        as_: crate::arch::aarch64::mmu::create_as(),
     };
 
     println!("spawned '{}' id={} sp={:#x}", name, id, sp);
@@ -130,6 +133,7 @@ pub unsafe fn spawn_el0(name: &'static str, priority: u8, entry: u64, usp: u64) 
         blocked_on_send: usize::MAX,
         id: id as u32,
         name,
+        as_: crate::arch::aarch64::mmu::create_as(),
     };
 
     println!("spawned '{}' (EL0) id={} ksp={:#x} usp={:#x}", name, id, sp, usp);
@@ -208,6 +212,9 @@ pub unsafe fn on_tick(old_sp: u64) -> u64 {
         IDLE_SP
     } else {
         THREADS[next].state = State::Running;
+        if THREADS[next].as_.valid {
+            crate::arch::aarch64::mmu::activate(&THREADS[next].as_);
+        }
         if THREADS[next].sp_el0 != 0 {
             asm!("msr SP_EL0, {}", in(reg) THREADS[next].sp_el0);
         }
@@ -294,6 +301,9 @@ pub unsafe fn on_yield(old_sp: u64) -> u64 {
         IDLE_SP
     } else {
         THREADS[next].state = State::Running;
+        if THREADS[next].as_.valid {
+            crate::arch::aarch64::mmu::activate(&THREADS[next].as_);
+        }
         THREADS[next].sp
     }
 }

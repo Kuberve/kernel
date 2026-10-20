@@ -84,23 +84,25 @@ pub extern "C" fn kmain() -> ! {
     unsafe { gic::init_spi(33); }
     timer::init();
 
-    println!("Enabling MMU...");
+    // --- MMU + phys (порядок важен) ---
+    println!("Initializing MMU...");
     unsafe { crate::arch::aarch64::mmu::init(); }
+
+    extern "C" { static __kernel_end: u8; }
+    let kernel_end = unsafe { &__kernel_end as *const _ as usize };
+    let ram_end = 0x40000000 + 128 * 1024 * 1024;
+    println!("phys: heap from {:#x} to {:#x}", kernel_end, ram_end);
+    unsafe { crate::arch::aarch64::phys::init(kernel_end, ram_end); }
+
+    let boot_as = unsafe { crate::arch::aarch64::mmu::create_as() };
+    unsafe { crate::arch::aarch64::mmu::activate(&boot_as); }
+    unsafe { crate::arch::aarch64::mmu::enable(); }
     println!("MMU enabled.");
 
     // Загрузить userspace ELF
     println!("Loading user ELF ({} bytes)...", USER_ELF.len());
     let user_entry = unsafe { loader::load_elf(USER_ELF) };
     println!("user entry = {:#x}", user_entry);
-
-    extern "C" {
-        static __kernel_end: u8;
-    }
-    let kernel_end = unsafe { &__kernel_end as *const _ as usize };
-    // QEMU virt: RAM 0x40000000 + 128MB (default -m). Если меняешь -m, поменяй здесь.
-    let ram_end = 0x40000000 + 128 * 1024 * 1024;
-    println!("phys: heap from {:#x} to {:#x}", kernel_end, ram_end);
-    unsafe { crate::arch::aarch64::phys::init(kernel_end, ram_end); }
 
     // Тест
     unsafe {
