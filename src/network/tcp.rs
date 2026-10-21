@@ -315,7 +315,63 @@ pub unsafe fn handle_incoming(
                 }
             }
             TcpState::Established => {
-                // TODO: обработка данных, ACK
+                // Обновить snd_una (что клиент подтвердил)
+                if h.flags & FLAG_ACK != 0 {
+                    c.local_ack = h.ack;
+                }
+
+                // Данные от клиента
+                if _payload.len() > 0 {
+                    if h.seq == c.remote_seq {
+                        // В порядке — принять
+                        c.remote_seq = c.remote_seq.wrapping_add(_payload.len() as u32);
+                        println!("TCP: recv {} bytes: seq={} (rcv_nxt→{})",
+                                 _payload.len(), h.seq, c.remote_seq);
+                        // Отправить ACK
+                        send_tcp_segment(
+                            src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq,
+                            FLAG_ACK, 65535, &[],
+                        );
+                        // Echo: отправить обратно (для теста)
+                        send_tcp_segment(
+                            src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq,
+                            FLAG_PSH | FLAG_ACK, 65535, _payload,
+                        );
+                        c.local_seq = c.local_seq.wrapping_add(_payload.len() as u32);
+                    } else {
+                        println!("TCP: out-of-order seq={} expect={}", h.seq, c.remote_seq);
+                        // Отправить ACK на ожидаемый seq
+                        send_tcp_segment(
+                            src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq,
+                            FLAG_ACK, 65535, &[],
+                        );
+                    }
+                }
+
+                // FIN от клиента
+                if h.flags & FLAG_FIN != 0 {
+                    c.remote_seq = c.remote_seq.wrapping_add(1);
+                    c.state = TcpState::CloseWait;
+                    println!("TCP: recv FIN, closing");
+                    // Отправить FIN-ACK
+                    send_tcp_segment(
+                        src_ip, h.src_port, h.dst_port,
+                        c.local_seq, c.remote_seq,
+                        FLAG_FIN | FLAG_ACK, 65535, &[],
+                    );
+                    c.local_seq = c.local_seq.wrapping_add(1);
+                    c.state = TcpState::LastAck;
+                }
+
+                // ACK нашего FIN
+                if c.state == TcpState::LastAck && h.flags & FLAG_ACK != 0 && h.ack == c.local_seq {
+                    println!("TCP: closed");
+                    c.state = TcpState::Closed;
+                    c.used = false;
+                }
             }
             _ => {}
         }
@@ -355,4 +411,39 @@ pub unsafe fn handle_incoming(
             65535, &[],
         );
     }
+}
+
+/// Отправить данные через установленное соединение.
+pub unsafe fn send_data(conn_id: usize, data: &[u8]) -> bool {
+    let c = match get(conn_id) {
+        Some(c) => c,
+        None => return false,
+    };
+    if c.state != TcpState::Established { return false; }
+    let src_ip = c.remote_ip;
+    let dst_port = c.remote_port;
+    let src_port = c.local_port;
+    let seq = c.local_seq;
+    let ack = c.remote_seq;
+
+    let ok = send_tcp_segment(
+        src_ip, dst_port, src_port,
+        seq, ack,
+        FLAG_PSH | FLAG_ACK, 65535, data,
+    );
+    if ok {
+        if let Some(c2) = get_mut(conn_id) {
+            c2.local_seq = c2.local_seq.wrapping_add(data.len() as u32);
+        }
+    }
+    ok
+}
+
+pub unsafe fn active_connection() -> Option<usize> {
+    for i in 0..MAX_TCP_CONNS {
+        if CONNS[i].used && CONNS[i].state == TcpState::Established {
+            return Some(i);
+        }
+    }
+    None
 }
