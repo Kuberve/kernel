@@ -153,6 +153,7 @@ pub extern "C" fn kmain() -> ! {
     if let Some(ref vn) = virtio_net_opt {
         println!("virtio-net initialized");
         unsafe { device::virtio_net::setup_rx(vn); }
+        unsafe { device::arp::init(); }
     } else {
         println!("virtio-net NOT FOUND");
     }

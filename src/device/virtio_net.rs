@@ -171,17 +171,27 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
             let buf = core::slice::from_raw_parts(buf_pa as *const u8, pkt_len);
             // Modern virtio: 12-byte virtio_net_hdr перед фреймом
             let frame = &buf[12..];
-            if frame.len() < 14 { /* too short */ }
-            let dst_mac = &frame[0..6];
-            let src_mac = &frame[6..12];
-            let ethertype = ((frame[12] as u16) << 8) | frame[13] as u16;
+            if frame.len() >= 14 {
+                let dst_mac = &frame[0..6];
+                let src_mac = &frame[6..12];
+                let ethertype = ((frame[12] as u16) << 8) | frame[13] as u16;
 
-            println!("RX pkt #{}: len={} (frame {} bytes) ethertype={:#06x}",
-                     desc_id, pkt_len, pkt_len - 12, ethertype);
-            println!("  dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                     dst_mac[0], dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
-            println!("  src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                     src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
+                println!("RX pkt #{}: len={} (frame {} bytes) ethertype={:#06x}",
+                         desc_id, pkt_len, pkt_len - 12, ethertype);
+                println!("  dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                         dst_mac[0], dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
+                println!("  src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                         src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
+
+                // ARP reply? кэшируем
+                if ethertype == 0x0806 {
+                    if let Some((spa, sha, op)) = crate::device::arp::parse_arp(frame) {
+                        if op == 2 {   // reply
+                            crate::device::arp::cache_insert(spa, sha);
+                        }
+                    }
+                }
+            }
         }
 
         // Вернуть desc в avail ring

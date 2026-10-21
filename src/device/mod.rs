@@ -9,3 +9,5 @@ pub mod fat32;
 pub mod fs;
 
 pub mod virtio_net;
+
+pub mod arp;

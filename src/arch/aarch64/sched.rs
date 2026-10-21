@@ -144,7 +144,6 @@ pub unsafe fn spawn_el0(
     core::ptr::write_volatile(p.add(0), user_entry);
     core::ptr::write_volatile(p.add(1), 0x000u64);
 
-    crate::println!("[spawn_el0 {}] before THREADS", id); 
     THREADS[id] = Thread {
         sp,
         sp_el0: usp,
@@ -158,7 +157,6 @@ pub unsafe fn spawn_el0(
         name,
         as_,
     };
-    crate::println!("[spawn_el0 {}] after THREADS", id);
 
     println!("spawned '{}' (EL0) id={} ksp={:#x} usp={:#x}", name, id, sp, usp);
 }
