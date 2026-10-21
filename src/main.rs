@@ -13,6 +13,8 @@ use crate::arch::aarch64::{gic, timer, vectors, sched};
 
 mod device;
 
+mod network;
+
 mod uart;
 mod panic;
 mod loader;
@@ -229,14 +231,23 @@ pub extern "C" fn kmain() -> ! {
 
     // --- Poll loop ---
     println!("Entering network poll loop...");
-    let mut poll_counter = 0u32;
+    let mut ping_sent = false;
     loop {
         if let Some(ref mut vn) = virtio_net_opt {
             let n = unsafe { device::virtio_net::poll_rx(vn) };
             if n > 0 {
                 println!("poll: processed {} packets", n);
             }
-            poll_counter = poll_counter.wrapping_add(1);
+
+            // Как только ARP cache знает gateway — шлём ping один раз
+            if !ping_sent {
+                let gw = [10u8, 0, 2, 2];
+                if unsafe { device::arp::lookup(gw) }.is_some() {
+                    println!("=== Sending ICMP echo request ===");
+                    unsafe { network::ping::send_ping(vn, gw); }
+                    ping_sent = true;
+                }
+            }
         } else {
             unsafe { asm!("wfe") };
         }

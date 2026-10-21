@@ -183,11 +183,29 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
                 println!("  src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                          src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]);
 
-                // ARP reply? кэшируем
+                                // ARP reply? кэшируем
                 if ethertype == 0x0806 {
                     if let Some((spa, sha, op)) = crate::device::arp::parse_arp(frame) {
-                        if op == 2 {   // reply
+                        if op == 2 {
                             crate::device::arp::cache_insert(spa, sha);
+                        }
+                    }
+                }
+
+                // IPv4?
+                if ethertype == 0x0800 {
+                    let ip_pkt = &frame[14..];
+                    if ip_pkt.len() >= 20 {
+                        let ihl = ((ip_pkt[0] & 0x0F) as usize) * 4;
+                        let protocol = ip_pkt[9];
+                        let src_ip = [ip_pkt[12], ip_pkt[13], ip_pkt[14], ip_pkt[15]];
+                        let total_len = ((ip_pkt[2] as usize) << 8) | (ip_pkt[3] as usize);
+                        if ihl >= 20 && ihl <= ip_pkt.len()
+                            && total_len >= ihl && total_len <= ip_pkt.len() {
+                            let payload = &ip_pkt[ihl..total_len];
+                            if protocol == 1 {   // ICMP
+                                crate::network::ping::handle_icmp(payload, src_ip);
+                            }
                         }
                     }
                 }
