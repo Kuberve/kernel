@@ -331,23 +331,33 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             old_sp
         }
         syscall::SYS_SOCKET => {
-            // a0 = domain (2 = AF_INET), a1 = kind (2 = SOCK_DGRAM)
-            if a0 != 2 || a1 != 2 {
+            if a0 != 2 {
                 ctx.x0 = u64::MAX;
                 return old_sp;
             }
-            let sid = match unsafe { crate::network::socket::create() } {
-                Some(s) => s,
-                None => { ctx.x0 = u64::MAX; return old_sp; }
-            };
-            let fd = unsafe { crate::device::fs::fd_alloc_socket(sid) };
-            if fd < 0 {
-                unsafe { crate::network::socket::close(sid); }
+            if a1 == 1 {
+                // SOCK_STREAM (TCP)
+                let fd = unsafe { crate::device::fs::fd_alloc_tcp_socket() };
+                ctx.x0 = if fd < 0 { u64::MAX } else { fd as u64 };
+                old_sp
+            } else if a1 == 2 {
+                // SOCK_DGRAM (UDP) — existing
+                let sid = match unsafe { crate::network::socket::create() } {
+                    Some(s) => s,
+                    None => { ctx.x0 = u64::MAX; return old_sp; }
+                };
+                let fd = unsafe { crate::device::fs::fd_alloc_socket(sid) };
+                if fd < 0 {
+                    unsafe { crate::network::socket::close(sid); }
+                    ctx.x0 = u64::MAX;
+                    return old_sp;
+                }
+                ctx.x0 = fd as u64;
+                old_sp
+            } else {
                 ctx.x0 = u64::MAX;
-                return old_sp;
+                old_sp
             }
-            ctx.x0 = fd as u64;
-            old_sp
         }
         syscall::SYS_BIND => {
             let sid = match unsafe { crate::device::fs::fd_socket_id(a0) } {
@@ -418,6 +428,38 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
                 core::ptr::write_volatile(port_out, pkt.src_port);
             }
             ctx.x0 = copy_n as u64;
+            old_sp
+        }
+        syscall::SYS_CONNECT => {
+            let fd = a0 as i64;
+            let ip_u32 = a1 as u32;
+            let port = a2 as u16;
+            let ip = [(ip_u32>>24) as u8, (ip_u32>>16) as u8, (ip_u32>>8) as u8, ip_u32 as u8];
+            ctx.x0 = unsafe { crate::network::tcp::connect(fd, ip, port) } as u64;
+            old_sp
+        }
+        syscall::SYS_TCP_SEND => {
+            let fd = a0 as i64;
+            let buf_ptr = a1 as *const u8;
+            let len = a2 as usize;
+            if len > 1400 { ctx.x0 = u64::MAX; return old_sp; }
+            let data = unsafe { core::slice::from_raw_parts(buf_ptr, len) };
+            ctx.x0 = unsafe { crate::network::tcp::tcp_send(fd, data) } as u64;
+            old_sp
+        }
+        syscall::SYS_TCP_RECV => {
+            let fd = a0 as i64;
+            let buf_ptr = a1 as *mut u8;
+            let len = a2 as usize;
+            if len > 1024 { ctx.x0 = u64::MAX; return old_sp; }
+            let mut tmp = [0u8; 1024];
+            let n = unsafe { crate::network::tcp::tcp_recv(fd, &mut tmp[..len]) };
+            if n > 0 {
+                for i in 0..n as usize {
+                    unsafe { core::ptr::write_volatile(buf_ptr.add(i), tmp[i]); }
+                }
+            }
+            ctx.x0 = n as u64;
             old_sp
         }
         syscall::SYS_EXIT => sched::exit(),

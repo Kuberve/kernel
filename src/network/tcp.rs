@@ -139,7 +139,8 @@ pub fn flags_str(flags: u8) -> &'static str {
 // TCP connection state
 // ============================================================
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TcpState {
     Closed,
     Listen,
@@ -156,6 +157,15 @@ pub enum TcpState {
 
 pub const MAX_TCP_CONNS: usize = 8;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TcpRole {
+    None,
+    Server,
+    Client,
+}
+
+const TCP_RX_BUF: usize = 1024;
+
 #[derive(Clone, Copy)]
 pub struct TcpConn {
     pub state: TcpState,
@@ -167,6 +177,11 @@ pub struct TcpConn {
     pub local_ack: u32,
     pub window: u16,
     pub used: bool,
+    pub fd: i64,
+    pub role: TcpRole,
+    pub rx_buf: [u8; TCP_RX_BUF],
+    pub rx_len: u16,
+    pub saw_syn_ack: bool,
 }
 
 pub const EMPTY_TCP_CONN: TcpConn = TcpConn {
@@ -179,6 +194,11 @@ pub const EMPTY_TCP_CONN: TcpConn = TcpConn {
     local_ack: 0,
     window: 0,
     used: false,
+    fd: -1,
+    role: TcpRole::None,
+    rx_buf: [0; TCP_RX_BUF],
+    rx_len: 0,
+    saw_syn_ack: false,
 };
 
 static mut CONNS: [TcpConn; MAX_TCP_CONNS] = [EMPTY_TCP_CONN; MAX_TCP_CONNS];
@@ -193,6 +213,16 @@ pub fn init() {
 
 /// Найти соединение по 4-tuple.
 pub unsafe fn find(src_ip: [u8; 4], src_port: u16, dst_port: u16) -> Option<usize> {
+    for i in 0..MAX_TCP_CONNS {
+        if CONNS[i].used {
+            println!("  CONNS[{}]: remote={}.{}.{}.{}:{} local=:{} state={:?}",
+                     i,
+                     CONNS[i].remote_ip[0], CONNS[i].remote_ip[1],
+                     CONNS[i].remote_ip[2], CONNS[i].remote_ip[3],
+                     CONNS[i].remote_port, CONNS[i].local_port,
+                     CONNS[i].state);
+        }
+    }
     for i in 0..MAX_TCP_CONNS {
         if CONNS[i].used
             && CONNS[i].remote_ip == src_ip
@@ -302,6 +332,19 @@ pub unsafe fn handle_incoming(
     if let Some(id) = conn_id {
         let c = get_mut(id).unwrap();
         match c.state {
+            TcpState::SynSent => {
+                if h.flags & FLAG_SYN != 0 && h.flags & FLAG_ACK != 0
+                   && h.ack == c.local_seq.wrapping_add(1) {
+                    c.remote_seq = h.seq.wrapping_add(1);
+                    c.local_seq = c.local_seq.wrapping_add(1);
+                    c.state = TcpState::Established;
+                    c.saw_syn_ack = true;
+                    println!("TCP client: ESTABLISHED to {}.{}.{}.{}:{}",
+                             src_ip[0], src_ip[1], src_ip[2], src_ip[3], h.src_port);
+                    send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                        c.local_seq, c.remote_seq, FLAG_ACK, 65535, &[]);
+                }
+            }
             TcpState::SynReceived => {
                 // Ждём ACK: клиент должен подтвердить наш SYN (our_isn+1)
                 if h.flags & FLAG_ACK != 0 && h.ack == c.local_seq.wrapping_add(1) {
@@ -315,60 +358,54 @@ pub unsafe fn handle_incoming(
                 }
             }
             TcpState::Established => {
-                // Обновить snd_una (что клиент подтвердил)
                 if h.flags & FLAG_ACK != 0 {
                     c.local_ack = h.ack;
                 }
 
-                // Данные от клиента
                 if _payload.len() > 0 {
                     if h.seq == c.remote_seq {
-                        // В порядке — принять
                         c.remote_seq = c.remote_seq.wrapping_add(_payload.len() as u32);
-                        println!("TCP: recv {} bytes: seq={} (rcv_nxt→{})",
-                                 _payload.len(), h.seq, c.remote_seq);
-                        // Отправить ACK
-                        send_tcp_segment(
-                            src_ip, h.src_port, h.dst_port,
-                            c.local_seq, c.remote_seq,
-                            FLAG_ACK, 65535, &[],
-                        );
-                        // Echo: отправить обратно (для теста)
-                        send_tcp_segment(
-                            src_ip, h.src_port, h.dst_port,
-                            c.local_seq, c.remote_seq,
-                            FLAG_PSH | FLAG_ACK, 65535, _payload,
-                        );
-                        c.local_seq = c.local_seq.wrapping_add(_payload.len() as u32);
+                        println!("TCP: recv {} bytes", _payload.len());
+                        send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq, FLAG_ACK, 65535, &[]);
+
+                        if c.role == TcpRole::Server {
+                            // Echo
+                            send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                                c.local_seq, c.remote_seq, FLAG_PSH | FLAG_ACK, 65535, _payload);
+                            c.local_seq = c.local_seq.wrapping_add(_payload.len() as u32);
+                        } else {
+                            // Client: буферизуем
+                            let space = TCP_RX_BUF - c.rx_len as usize;
+                            let n = core::cmp::min(space, _payload.len());
+                            for i in 0..n {
+                                c.rx_buf[c.rx_len as usize + i] = _payload[i];
+                            }
+                            c.rx_len += n as u16;
+                            println!("TCP client: buffered {} bytes (rx_len={})", n, c.rx_len);
+                        }
                     } else {
                         println!("TCP: out-of-order seq={} expect={}", h.seq, c.remote_seq);
-                        // Отправить ACK на ожидаемый seq
-                        send_tcp_segment(
-                            src_ip, h.src_port, h.dst_port,
-                            c.local_seq, c.remote_seq,
-                            FLAG_ACK, 65535, &[],
-                        );
+                        send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq, FLAG_ACK, 65535, &[]);
                     }
                 }
 
-                // FIN от клиента
                 if h.flags & FLAG_FIN != 0 {
                     c.remote_seq = c.remote_seq.wrapping_add(1);
-                    c.state = TcpState::CloseWait;
-                    println!("TCP: recv FIN, closing");
-                    // Отправить FIN-ACK
-                    send_tcp_segment(
-                        src_ip, h.src_port, h.dst_port,
-                        c.local_seq, c.remote_seq,
-                        FLAG_FIN | FLAG_ACK, 65535, &[],
-                    );
-                    c.local_seq = c.local_seq.wrapping_add(1);
-                    c.state = TcpState::LastAck;
+                    if c.role == TcpRole::Server {
+                        c.state = TcpState::CloseWait;
+                        send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq, FLAG_FIN | FLAG_ACK, 65535, &[]);
+                        c.local_seq = c.local_seq.wrapping_add(1);
+                        c.state = TcpState::LastAck;
+                    } else {
+                        c.state = TcpState::Closed;
+                        println!("TCP client: server FIN, closed");
+                    }
                 }
 
-                // ACK нашего FIN
                 if c.state == TcpState::LastAck && h.flags & FLAG_ACK != 0 && h.ack == c.local_seq {
-                    println!("TCP: closed");
                     c.state = TcpState::Closed;
                     c.used = false;
                 }
@@ -446,4 +483,86 @@ pub unsafe fn active_connection() -> Option<usize> {
         }
     }
     None
+}
+
+pub unsafe fn find_by_fd(fd: i64) -> Option<usize> {
+    for i in 0..MAX_TCP_CONNS {
+        if CONNS[i].used && CONNS[i].fd == fd {
+            return Some(i);
+        }
+    }
+    None
+}
+
+pub unsafe fn connect(fd: i64, dst_ip: [u8; 4], dst_port: u16) -> i64 {
+    use crate::arch::aarch64::sched;
+
+    let slot = match alloc_slot() {
+        Some(s) => s,
+        None => return -1,
+    };
+    let our_isn = gen_isn();
+    let our_port = 49152u16.wrapping_add((slot as u16) * 17);
+
+    {
+        let c = get_mut(slot).unwrap();
+        *c = EMPTY_TCP_CONN;
+        c.used = true;
+        c.state = TcpState::SynSent;
+        c.local_port = our_port;
+        c.remote_ip = dst_ip;
+        c.remote_port = dst_port;
+        c.local_seq = our_isn;
+        c.window = 65535;
+        c.fd = fd;
+        c.role = TcpRole::Client;
+    }
+
+    println!("TCP client: connect {}.{}.{}.{}:{} (isn={:#x}, port={})",
+             dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dst_port, our_isn, our_port);
+
+    if !send_tcp_segment(dst_ip, dst_port, our_port, our_isn, 0, FLAG_SYN, 65535, &[]) {
+        println!("TCP client: SYN send FAILED");
+        get_mut(slot).unwrap().used = false;
+        return -1;
+    }
+
+    for _ in 0..10 {
+        sched::sleep(1);
+        let c = get(slot).unwrap();
+        if c.saw_syn_ack {
+            return slot as i64;  // успех: SYN-ACK получен
+        }
+    }
+    println!("TCP client: connect timeout");
+    get_mut(slot).unwrap().used = false;
+    -1
+}
+
+pub unsafe fn tcp_send(fd: i64, data: &[u8]) -> i64 {
+    let slot = match find_by_fd(fd) {
+        Some(s) => s,
+        None => return -1,
+    };
+    let c = get(slot).unwrap();
+    if c.state != TcpState::Established { return -1; }
+    if !send_data(slot, data) { return -1; }
+    data.len() as i64
+}
+
+pub unsafe fn tcp_recv(fd: i64, out: &mut [u8]) -> i64 {
+    let slot = match find_by_fd(fd) {
+        Some(s) => s,
+        None => return -1,
+    };
+    let c = get_mut(slot).unwrap();
+    if c.rx_len == 0 { return 0; }
+    let n = core::cmp::min(out.len(), c.rx_len as usize);
+    out[..n].copy_from_slice(&c.rx_buf[..n]);
+    let rem = c.rx_len as usize - n;
+    for i in 0..rem {
+        c.rx_buf[i] = c.rx_buf[n + i];
+    }
+    c.rx_len = rem as u16;
+    n as i64
 }

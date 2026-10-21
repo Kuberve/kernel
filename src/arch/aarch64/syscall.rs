@@ -23,6 +23,9 @@ pub const SYS_SOCKET:   u64 = sys_num::SOCKET;
 pub const SYS_BIND:     u64 = sys_num::BIND;
 pub const SYS_SENDTO:   u64 = sys_num::SENDTO;
 pub const SYS_RECVFROM: u64 = sys_num::RECVFROM;
+pub const SYS_CONNECT:  u64 = sys_num::CONNECT;
+pub const SYS_TCP_SEND: u64 = sys_num::TCP_SEND;
+pub const SYS_TCP_RECV: u64 = sys_num::TCP_RECV;
 
 /// Отдать CPU добровольно.
 #[allow(dead_code)]

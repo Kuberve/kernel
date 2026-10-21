@@ -5,6 +5,7 @@ use crate::device::fat32::NvmeBuf;
 pub enum FdKind {
     File,
     Socket,
+    TcpSocket,
 }
 
 pub const MAX_FDS: usize = 32;
@@ -115,6 +116,10 @@ pub unsafe fn fd_close(fd: u64) -> i64 {
         let sid = FD_SOCKET_ID[fd as usize];
         crate::network::socket::close(sid);
     }
+    if kind == FdKind::TcpSocket {
+        // MVP: не закрываем conn сразу — ждём FIN/ACK
+        // TODO: отправить FIN, FinWait1 (v0.9.6e)
+    }
     FD_USED[fd as usize] = false;
     0
 }
@@ -199,6 +204,17 @@ pub unsafe fn fd_alloc_socket(socket_id: usize) -> i64 {
             FD_USED[i] = true;
             FD_KIND[i] = FdKind::Socket;
             FD_SOCKET_ID[i] = socket_id;
+            return i as i64;
+        }
+    }
+    -1
+}
+
+pub unsafe fn fd_alloc_tcp_socket() -> i64 {
+    for i in 0..MAX_FDS {
+        if !FD_USED[i] {
+            FD_USED[i] = true;
+            FD_KIND[i] = FdKind::TcpSocket;
             return i as i64;
         }
     }
