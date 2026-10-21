@@ -126,6 +126,8 @@ pub unsafe fn setup_rx(vn: &VirtioNet) -> bool {
         avail.ring[i] = i as u16;
     }
     avail.idx = size as u16;
+    let avail = &*(avail_base as *const AvailPage);
+    let used = &*(vn.rx.used_pa as *const UsedPage);
 
     // 3. Memory barrier
     core::arch::asm!("dsb sy");
@@ -139,9 +141,7 @@ pub unsafe fn setup_rx(vn: &VirtioNet) -> bool {
 
 /// Прочитать notify_off для очереди qidx и записать doorbell.
 unsafe fn notify_queue(vn: &VirtioNet, qidx: u16) {
-    // queue_select = qidx
     write_u16(vn.bar, 0x16, qidx);
-    // queue_notify_off (offset 0x1E, u16)
     let notify_off = read_u16(vn.bar, 0x1E);
     let addr = vn.bar + vn.notify_off as u64 + (notify_off as u64) * vn.notify_mult as u64;
     core::arch::asm!("dsb sy");
@@ -166,15 +166,18 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
         let desc_id = elem.id as usize;
         let pkt_len = elem.len as usize;
 
-        if desc_id < size && pkt_len > 0 {
+        if desc_id < size && pkt_len > 12 {
             let buf_pa = RX_BUF_PTRS[desc_id];
             let buf = core::slice::from_raw_parts(buf_pa as *const u8, pkt_len);
-            let dst_mac = &buf[0..6];
-            let src_mac = &buf[6..12];
-            let ethertype = ((buf[12] as u16) << 8) | buf[13] as u16;
+            // Modern virtio: 12-byte virtio_net_hdr перед фреймом
+            let frame = &buf[12..];
+            if frame.len() < 14 { /* too short */ }
+            let dst_mac = &frame[0..6];
+            let src_mac = &frame[6..12];
+            let ethertype = ((frame[12] as u16) << 8) | frame[13] as u16;
 
-            println!("RX pkt #{}: len={} ethertype={:#06x}",
-                     desc_id, pkt_len, ethertype);
+            println!("RX pkt #{}: len={} (frame {} bytes) ethertype={:#06x}",
+                     desc_id, pkt_len, pkt_len - 12, ethertype);
             println!("  dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                      dst_mac[0], dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
             println!("  src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -195,6 +198,73 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
         notify_queue(vn, 0);   // снова сказать device "можешь писать"
     }
     count
+}
+
+// ============================================================
+// TX setup and send
+// ============================================================
+
+static mut TX_BUF: [u8; 2048] = [0; 2048];
+static mut TX_DESC_IDX: u16 = 0;
+
+/// Отправить Ethernet-фрейм (без virtio_net_hdr — QEMU без MRG_RXBUF и без VIRTIO_NET_F_CSUM).
+pub unsafe fn send_packet(vn: &mut VirtioNet, data: &[u8]) -> bool {
+    if data.len() > 1500 { return false; }
+
+    let desc_base = vn.tx.desc_pa;
+    let avail_base = vn.tx.avail_pa;
+    let used_base = vn.tx.used_pa;
+    let size = vn.tx.size as usize;
+
+    // Modern virtio: 12-byte virtio_net_hdr (всегда, даже без MRG_RXBUF)
+    const HDR_SIZE: usize = 12;
+    let buf_pa = &raw mut TX_BUF as *mut u8;
+
+    // Zero header
+    for i in 0..HDR_SIZE {
+        core::ptr::write_volatile(buf_pa.add(i), 0);
+    }
+    // Frame после header
+    for i in 0..data.len() {
+        core::ptr::write_volatile(buf_pa.add(HDR_SIZE + i), data[i]);
+    }
+
+    let total_len = HDR_SIZE + data.len();
+
+    // Заполнить desc[TX_DESC_IDX % size]
+    let desc_idx = (vn.tx.next_avail as usize) % size;
+    let desc = &mut *((desc_base + (desc_idx * 16) as u64) as *mut VirtqDesc);
+    desc.addr = buf_pa as u64;
+    desc.len = total_len as u32;
+    desc.flags = 0;   // не WRITE (device читает из buf)
+    desc.next = 0;
+
+    // Добавить в avail ring
+    let avail = &mut *(avail_base as *mut AvailPage);
+    avail.ring[(vn.tx.next_avail as usize) % size] = desc_idx as u16;
+    vn.tx.next_avail = vn.tx.next_avail.wrapping_add(1);
+    avail.idx = vn.tx.next_avail;
+
+    // Memory barrier
+    core::arch::asm!("dsb sy");
+
+    // Notify TX (queue 1)
+    notify_queue(vn, 1);
+
+    // Polling used ring TX — ждать пока device прочитает
+    let used = &mut *(used_base as *mut UsedPage);
+    let mut timeout = 0u64;
+    while vn.tx.last_used_idx == used.idx {
+        timeout += 1;
+        if timeout > 10_000_000 {
+            println!("virtio-net: TX timeout (used.idx={} last={})", used.idx, vn.tx.last_used_idx);
+            return false;
+        }
+        core::arch::asm!("yield", options(nostack, nomem));
+    }
+    vn.tx.last_used_idx = used.idx;
+
+    true
 }
 
 pub unsafe fn init() -> Option<VirtioNet> {

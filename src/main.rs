@@ -194,8 +194,39 @@ pub extern "C" fn kmain() -> ! {
 
     println!("Kernel alive. Main becomes idle.");
 
-    // После enable interrupts — поллинг RX
-    // Идём в бесконечный цикл поллинга вместо wfe
+    // --- ARP request: кто 10.0.2.2 (gateway)? ---
+    if let Some(ref mut vn) = virtio_net_opt {
+        let our_mac = vn.mac;
+        // Ethernet: dst=broadcast, src=наш, ethertype=ARP
+        // ARP: htype=1, ptype=0x0800, hlen=6, plen=4, op=1 (request),
+        //      sha=наш MAC, spa=10.0.2.15, tha=00, tpa=10.0.2.2
+        let mut arp = [0u8; 42];
+        // Ethernet
+        for i in 0..6 { arp[i] = 0xFF; }              // dst broadcast
+        for i in 0..6 { arp[6 + i] = our_mac[i]; }    // src MAC
+        arp[12] = 0x08; arp[13] = 0x06;                // EtherType ARP
+
+        // ARP
+        arp[14] = 0; arp[15] = 1;                      // htype = Ethernet
+        arp[16] = 0x08; arp[17] = 0x00;                // ptype = IPv4
+        arp[18] = 6;                                   // hlen
+        arp[19] = 4;                                   // plen
+        arp[20] = 0; arp[21] = 1;                      // op = request
+        for i in 0..6 { arp[22 + i] = our_mac[i]; }   // sha
+        arp[28] = 10; arp[29] = 0; arp[30] = 2; arp[31] = 15;  // spa = 10.0.2.15
+        // tha = 0
+        arp[38] = 10; arp[39] = 0; arp[40] = 2; arp[41] = 2;   // tpa = 10.0.2.2
+
+        println!("=== Sending ARP request: who has 10.0.2.2? ===");
+        let ok = unsafe { device::virtio_net::send_packet(vn, &arp) };
+        if ok {
+            println!("ARP sent OK");
+        } else {
+            println!("ARP send FAILED");
+        }
+    }
+
+    // --- Poll loop ---
     println!("Entering network poll loop...");
     let mut poll_counter = 0u32;
     loop {
@@ -205,10 +236,6 @@ pub extern "C" fn kmain() -> ! {
                 println!("poll: processed {} packets", n);
             }
             poll_counter = poll_counter.wrapping_add(1);
-            // Раз в ~10000 итераций — короткий wfe (даём CPU другим)
-            if poll_counter % 10000 == 0 {
-                unsafe { asm!("wfe") };
-            }
         } else {
             unsafe { asm!("wfe") };
         }
