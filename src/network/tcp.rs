@@ -1,4 +1,5 @@
 use crate::network::ip::checksum;
+use crate::println;
 
 pub const TCP_HEADER_LEN: usize = 20;
 
@@ -222,4 +223,136 @@ pub unsafe fn get_mut(id: usize) -> Option<&'static mut TcpConn> {
 pub unsafe fn get(id: usize) -> Option<&'static TcpConn> {
     if id >= MAX_TCP_CONNS { return None; }
     Some(&CONNS[id])
+}
+
+/// Отправить TCP сегмент. Собирает IPv4 + TCP + Ethernet, шлёт через virtio-net.
+pub unsafe fn send_tcp_segment(
+    dst_ip: [u8; 4],
+    dst_port: u16,
+    src_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    window: u16,
+    payload: &[u8],
+) -> bool {
+    use crate::device::{virtio_net, arp};
+
+    let vn = match virtio_net::get_global_mut() {
+        Some(v) => v,
+        None => return false,
+    };
+
+    let dst_mac = match arp::lookup(dst_ip) {
+        Some(m) => m,
+        None => return false,
+    };
+
+    let our_ip: [u8; 4] = [10, 0, 2, 15];
+
+    // TCP segment
+    let mut tcp_buf = [0u8; 1400];
+    let tcp_len = build_tcp_packet(
+        &mut tcp_buf, our_ip, dst_ip, src_port, dst_port,
+        seq, ack, flags, window, payload);
+
+    // IPv4
+    let total_len = 20 + tcp_len;
+    let mut packet = [0u8; 1420];
+    crate::network::ip::build_ipv4_header(
+        &mut packet[0..20], total_len as u16, 0, 6, our_ip, dst_ip);
+    packet[20..20 + tcp_len].copy_from_slice(&tcp_buf[..tcp_len]);
+
+    // Ethernet
+    let frame_len = 14 + total_len;
+    let mut frame = [0u8; 1440];
+    for i in 0..6 { frame[i] = dst_mac[i]; }
+    for i in 0..6 { frame[6 + i] = vn.mac[i]; }
+    frame[12] = 0x08;
+    frame[13] = 0x00;
+    frame[14..14 + total_len].copy_from_slice(&packet[..total_len]);
+
+    let send_len = if frame_len < 60 { 60 } else { frame_len };
+
+    virtio_net::send_packet(vn, &frame[..send_len])
+}
+
+// Слушающие порты (пока один — 8080)
+static mut LISTEN_PORT: u16 = 0;
+
+pub unsafe fn listen(port: u16) {
+    LISTEN_PORT = port;
+    println!("TCP: listening on :{}", port);
+}
+
+fn gen_isn() -> u32 {
+    let v: u64;
+    unsafe { core::arch::asm!("mrs {}, CNTPCT_EL0", out(reg) v) };
+    (v & 0xFFFFFFFF) as u32
+}
+
+pub unsafe fn handle_incoming(
+    src_ip: [u8; 4],
+    h: &TcpHeader,
+    _payload: &[u8],
+) {
+    // 1. Есть ли существующее соединение?
+    let conn_id = find(src_ip, h.src_port, h.dst_port);
+
+    if let Some(id) = conn_id {
+        let c = get_mut(id).unwrap();
+        match c.state {
+            TcpState::SynReceived => {
+                // Ждём ACK: клиент должен подтвердить наш SYN (our_isn+1)
+                if h.flags & FLAG_ACK != 0 && h.ack == c.local_seq.wrapping_add(1) {
+                    c.state = TcpState::Established;
+                    c.local_seq = c.local_seq.wrapping_add(1);   // snd_nxt: SYN съел 1
+                    // Обновить remote_seq: клиентский seq + payload
+                    c.remote_seq = h.seq.wrapping_add(h.payload_len as u32);
+                    println!("TCP: ESTABLISHED {}.{}.{}.{}:{} <-> :{}",
+                             src_ip[0], src_ip[1], src_ip[2], src_ip[3],
+                             c.remote_port, c.local_port);
+                }
+            }
+            TcpState::Established => {
+                // TODO: обработка данных, ACK
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // 2. Нет соединения — это SYN на listen_port?
+    if h.flags & FLAG_SYN != 0 && (h.flags & FLAG_ACK) == 0 && h.dst_port == LISTEN_PORT {
+        let slot = match alloc_slot() {
+            Some(s) => s,
+            None => {
+                println!("TCP: no free conn slot, dropping SYN");
+                return;
+            }
+        };
+        let our_isn = gen_isn();
+
+        let c = get_mut(slot).unwrap();
+        c.used = true;
+        c.state = TcpState::SynReceived;
+        c.local_port = h.dst_port;
+        c.remote_ip = src_ip;
+        c.remote_port = h.src_port;
+        c.local_seq = our_isn;
+        c.remote_seq = h.seq.wrapping_add(1);   // SYN съедает 1
+        c.local_ack = h.seq.wrapping_add(1);
+        c.window = 65535;
+
+        println!("TCP: recv SYN {}.{}.{}.{}:{} -> :{}, sending SYN-ACK (our_isn={:#x})",
+                 src_ip[0], src_ip[1], src_ip[2], src_ip[3], h.src_port, h.dst_port, our_isn);
+
+        // Отправить SYN-ACK: seq=our_isn, ack=client_isn+1
+        send_tcp_segment(
+            src_ip, h.src_port, h.dst_port,
+            our_isn, h.seq.wrapping_add(1),
+            FLAG_SYN | FLAG_ACK,
+            65535, &[],
+        );
+    }
 }

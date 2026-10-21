@@ -212,9 +212,15 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
                                              h.src_port, h.dst_port,
                                              crate::network::tcp::flags_str(h.flags),
                                              h.seq, h.ack, h.window, h.payload_len);
-                                    // TODO: state machine в v0.9.6b.2
+                                    let payload_start = (h.data_offset as usize) * 4;
+                                    let tcp_payload = if payload_start <= payload.len() {
+                                        &payload[payload_start..]
+                                    } else {
+                                        &[]
+                                    };
+                                    crate::network::tcp::handle_incoming(src_ip, &h, tcp_payload);
                                 }
-                            } else if protocol == 17 {
+                            } else if protocol == 17 {    // UDP
                                 if let Some(h) = crate::network::udp::parse_udp_header(payload) {
                                     match crate::network::socket::find_by_port(h.dst_port) {
                                         Some(sid) => {

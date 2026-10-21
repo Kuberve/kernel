@@ -108,6 +108,7 @@ pub extern "C" fn kmain() -> ! {
     println!("MMU enabled.");
     crate::network::socket::init();
     crate::network::tcp::init();
+    unsafe { crate::network::tcp::listen(8080); }
 
     // --- PCIe + NVMe ---
     let nvme_bar = unsafe { device::pci::init() };
