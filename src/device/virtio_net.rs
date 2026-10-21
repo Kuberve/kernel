@@ -205,6 +205,15 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
                             let payload = &ip_pkt[ihl..total_len];
                             if protocol == 1 {   // ICMP
                                 crate::network::ping::handle_icmp(payload, src_ip);
+                            } else if protocol == 6 {   // TCP
+                                if let Some(h) = crate::network::tcp::parse_tcp_header(payload) {
+                                    println!("TCP: {}.{}.{}.{}:{} -> :{} flags={} seq={} ack={} wnd={} len={}",
+                                             src_ip[0], src_ip[1], src_ip[2], src_ip[3],
+                                             h.src_port, h.dst_port,
+                                             crate::network::tcp::flags_str(h.flags),
+                                             h.seq, h.ack, h.window, h.payload_len);
+                                    // TODO: state machine в v0.9.6b.2
+                                }
                             } else if protocol == 17 {
                                 if let Some(h) = crate::network::udp::parse_udp_header(payload) {
                                     match crate::network::socket::find_by_port(h.dst_port) {

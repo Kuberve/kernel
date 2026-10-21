@@ -133,3 +133,93 @@ pub fn flags_str(flags: u8) -> &'static str {
         _ => "?",
     }
 }
+
+// ============================================================
+// TCP connection state
+// ============================================================
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TcpState {
+    Closed,
+    Listen,
+    SynSent,
+    SynReceived,
+    Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
+}
+
+pub const MAX_TCP_CONNS: usize = 8;
+
+#[derive(Clone, Copy)]
+pub struct TcpConn {
+    pub state: TcpState,
+    pub local_port: u16,
+    pub remote_ip: [u8; 4],
+    pub remote_port: u16,
+    pub local_seq: u32,
+    pub remote_seq: u32,
+    pub local_ack: u32,
+    pub window: u16,
+    pub used: bool,
+}
+
+pub const EMPTY_TCP_CONN: TcpConn = TcpConn {
+    state: TcpState::Closed,
+    local_port: 0,
+    remote_ip: [0; 4],
+    remote_port: 0,
+    local_seq: 0,
+    remote_seq: 0,
+    local_ack: 0,
+    window: 0,
+    used: false,
+};
+
+static mut CONNS: [TcpConn; MAX_TCP_CONNS] = [EMPTY_TCP_CONN; MAX_TCP_CONNS];
+
+pub fn init() {
+    unsafe {
+        for i in 0..MAX_TCP_CONNS {
+            CONNS[i] = EMPTY_TCP_CONN;
+        }
+    }
+}
+
+/// Найти соединение по 4-tuple.
+pub unsafe fn find(src_ip: [u8; 4], src_port: u16, dst_port: u16) -> Option<usize> {
+    for i in 0..MAX_TCP_CONNS {
+        if CONNS[i].used
+            && CONNS[i].remote_ip == src_ip
+            && CONNS[i].remote_port == src_port
+            && CONNS[i].local_port == dst_port
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Найти free slot.
+pub unsafe fn alloc_slot() -> Option<usize> {
+    for i in 0..MAX_TCP_CONNS {
+        if !CONNS[i].used {
+            return Some(i);
+        }
+    }
+    None
+}
+
+pub unsafe fn get_mut(id: usize) -> Option<&'static mut TcpConn> {
+    if id >= MAX_TCP_CONNS { return None; }
+    Some(&mut CONNS[id])
+}
+
+pub unsafe fn get(id: usize) -> Option<&'static TcpConn> {
+    if id >= MAX_TCP_CONNS { return None; }
+    Some(&CONNS[id])
+}
