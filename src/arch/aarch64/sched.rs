@@ -304,6 +304,9 @@ pub unsafe fn on_yield(old_sp: u64) -> u64 {
         IDLE_SP = old_sp;
     } else {
         THREADS[CURRENT].sp = old_sp;
+        let tmp: u64;
+        asm!("mrs {}, SP_EL0", out(reg) tmp);
+        THREADS[CURRENT].sp_el0 = tmp;
         if THREADS[CURRENT].state == State::Running {
             THREADS[CURRENT].state = State::Ready;
         }
@@ -326,6 +329,9 @@ pub unsafe fn on_yield(old_sp: u64) -> u64 {
         THREADS[next].state = State::Running;
         if THREADS[next].as_.valid {
             crate::arch::aarch64::mmu::activate(&THREADS[next].as_);
+        }
+        if THREADS[next].sp_el0 != 0 {
+            asm!("msr SP_EL0, {}", in(reg) THREADS[next].sp_el0);
         }
         THREADS[next].sp
     }

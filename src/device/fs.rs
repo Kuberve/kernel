@@ -1,9 +1,17 @@
 use crate::device::fat32;
 use crate::device::fat32::NvmeBuf;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FdKind {
+    File,
+    Socket,
+}
+
 pub const MAX_FDS: usize = 32;
 
 static mut FD_USED: [bool; MAX_FDS] = [false; MAX_FDS];
+static mut FD_KIND: [FdKind; MAX_FDS] = [FdKind::File; MAX_FDS];
+static mut FD_SOCKET_ID: [usize; MAX_FDS] = [0; MAX_FDS];
 static mut FD_FIRST_CLUSTER: [u32; MAX_FDS] = [0; MAX_FDS];
 static mut FD_SIZE: [u32; MAX_FDS] = [0; MAX_FDS];
 static mut FD_OFFSET: [u32; MAX_FDS] = [0; MAX_FDS];
@@ -38,6 +46,7 @@ pub unsafe fn fd_open(path: &str, flags: u64) -> i64 {
     for i in 0..MAX_FDS {
         if !FD_USED[i] {
             FD_USED[i] = true;
+            FD_KIND[i] = FdKind::File;
             FD_FIRST_CLUSTER[i] = first_cluster;
             FD_SIZE[i] = size;
             FD_OFFSET[i] = 0;
@@ -101,6 +110,11 @@ pub unsafe fn fd_read(fd: u64, buf: u64, len: u64) -> i64 {
 
 pub unsafe fn fd_close(fd: u64) -> i64 {
     if fd as usize >= MAX_FDS || !FD_USED[fd as usize] { return -1; }
+    let kind = FD_KIND[fd as usize];
+    if kind == FdKind::Socket {
+        let sid = FD_SOCKET_ID[fd as usize];
+        crate::network::socket::close(sid);
+    }
     FD_USED[fd as usize] = false;
     0
 }
@@ -177,4 +191,27 @@ pub unsafe fn fd_write(fd: u64, buf: u64, len: u64) -> i64 {
 
     FD_OFFSET[fd] = offset + len as u32;
     len as i64
+}
+
+pub unsafe fn fd_alloc_socket(socket_id: usize) -> i64 {
+    for i in 0..MAX_FDS {
+        if !FD_USED[i] {
+            FD_USED[i] = true;
+            FD_KIND[i] = FdKind::Socket;
+            FD_SOCKET_ID[i] = socket_id;
+            return i as i64;
+        }
+    }
+    -1
+}
+
+pub unsafe fn fd_kind(fd: u64) -> Option<FdKind> {
+    if fd as usize >= MAX_FDS || !FD_USED[fd as usize] { return None; }
+    Some(FD_KIND[fd as usize])
+}
+
+pub unsafe fn fd_socket_id(fd: u64) -> Option<usize> {
+    if fd as usize >= MAX_FDS || !FD_USED[fd as usize] { return None; }
+    if FD_KIND[fd as usize] != FdKind::Socket { return None; }
+    Some(FD_SOCKET_ID[fd as usize])
 }

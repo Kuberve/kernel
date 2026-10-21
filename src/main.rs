@@ -106,6 +106,7 @@ pub extern "C" fn kmain() -> ! {
     unsafe { crate::arch::aarch64::mmu::activate(&boot_as); }
     unsafe { crate::arch::aarch64::mmu::enable(); }
     println!("MMU enabled.");
+    crate::network::socket::init();
 
     // --- PCIe + NVMe ---
     let nvme_bar = unsafe { device::pci::init() };
@@ -151,11 +152,11 @@ pub extern "C" fn kmain() -> ! {
 
     // --- virtio-net ---
     println!("=== Network ===");
-    let mut virtio_net_opt = unsafe { device::virtio_net::init() };
-    if let Some(ref vn) = virtio_net_opt {
+    let vn_init = unsafe { device::virtio_net::init() };
+    if let Some(vn) = vn_init {
         println!("virtio-net initialized");
-        unsafe { device::virtio_net::setup_rx(vn); }
-        unsafe { device::arp::init(); }
+        unsafe { device::virtio_net::setup_rx(&vn); }
+        unsafe { device::virtio_net::set_global(vn); }
     } else {
         println!("virtio-net NOT FOUND");
     }
@@ -197,43 +198,38 @@ pub extern "C" fn kmain() -> ! {
 
     println!("Kernel alive. Main becomes idle.");
 
-    // --- ARP request: кто 10.0.2.2 (gateway)? ---
-    if let Some(ref mut vn) = virtio_net_opt {
+    // Helper: send ARP request for target IP
+    unsafe fn send_arp(vn: &mut device::virtio_net::VirtioNet, target_ip: [u8; 4]) {
         let our_mac = vn.mac;
-        // Ethernet: dst=broadcast, src=наш, ethertype=ARP
-        // ARP: htype=1, ptype=0x0800, hlen=6, plen=4, op=1 (request),
-        //      sha=наш MAC, spa=10.0.2.15, tha=00, tpa=10.0.2.2
-        let mut arp = [0u8; 42];
-        // Ethernet
-        for i in 0..6 { arp[i] = 0xFF; }              // dst broadcast
-        for i in 0..6 { arp[6 + i] = our_mac[i]; }    // src MAC
-        arp[12] = 0x08; arp[13] = 0x06;                // EtherType ARP
+        let mut arp = [0u8; 60];
+        for i in 0..6 { arp[i] = 0xFF; }
+        for i in 0..6 { arp[6 + i] = our_mac[i]; }
+        arp[12] = 0x08; arp[13] = 0x06;
+        arp[14] = 0; arp[15] = 1;
+        arp[16] = 0x08; arp[17] = 0x00;
+        arp[18] = 6;
+        arp[19] = 4;
+        arp[20] = 0; arp[21] = 1;
+        for i in 0..6 { arp[22 + i] = our_mac[i]; }
+        arp[28] = 10; arp[29] = 0; arp[30] = 2; arp[31] = 15;
+        arp[38] = target_ip[0]; arp[39] = target_ip[1];
+        arp[40] = target_ip[2]; arp[41] = target_ip[3];
 
-        // ARP
-        arp[14] = 0; arp[15] = 1;                      // htype = Ethernet
-        arp[16] = 0x08; arp[17] = 0x00;                // ptype = IPv4
-        arp[18] = 6;                                   // hlen
-        arp[19] = 4;                                   // plen
-        arp[20] = 0; arp[21] = 1;                      // op = request
-        for i in 0..6 { arp[22 + i] = our_mac[i]; }   // sha
-        arp[28] = 10; arp[29] = 0; arp[30] = 2; arp[31] = 15;  // spa = 10.0.2.15
-        // tha = 0
-        arp[38] = 10; arp[39] = 0; arp[40] = 2; arp[41] = 2;   // tpa = 10.0.2.2
+        println!("=== ARP: who has {}.{}.{}.{}? ===",
+                 target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
+        device::virtio_net::send_packet(vn, &arp);
+    }
 
-        println!("=== Sending ARP request: who has 10.0.2.2? ===");
-        let ok = unsafe { device::virtio_net::send_packet(vn, &arp) };
-        if ok {
-            println!("ARP sent OK");
-        } else {
-            println!("ARP send FAILED");
-        }
+    if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
+        unsafe { send_arp(vn, [10, 0, 2, 2]); }   // gateway
+        unsafe { send_arp(vn, [10, 0, 2, 3]); }   // DNS
     }
 
     // --- Poll loop ---
     println!("Entering network poll loop...");
     let mut ping_sent = false;
     loop {
-        if let Some(ref mut vn) = virtio_net_opt {
+        if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
             let n = unsafe { device::virtio_net::poll_rx(vn) };
             if n > 0 {
                 println!("poll: processed {} packets", n);

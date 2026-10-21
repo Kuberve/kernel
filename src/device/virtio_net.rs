@@ -205,6 +205,29 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
                             let payload = &ip_pkt[ihl..total_len];
                             if protocol == 1 {   // ICMP
                                 crate::network::ping::handle_icmp(payload, src_ip);
+                            } else if protocol == 17 {
+                                if let Some(h) = crate::network::udp::parse_udp_header(payload) {
+                                    match crate::network::socket::find_by_port(h.dst_port) {
+                                        Some(sid) => {
+                                            println!("  UDP: socket id={}", sid);
+                                        let mut pkt = crate::network::socket::Packet {
+                                            data: [0; crate::network::socket::SOCKET_PKT_MAX],
+                                            len: 0,
+                                            src_ip,
+                                            src_port: h.src_port,
+                                        };
+                                        let payload_start = 8;
+                                        let payload_end = core::cmp::min(h.length as usize, payload.len());
+                                        if payload_end > payload_start {
+                                            let n = payload_end - payload_start;
+                                            let n = core::cmp::min(n, crate::network::socket::SOCKET_PKT_MAX);
+                                            pkt.data[..n].copy_from_slice(&payload[payload_start..payload_start + n]);
+                                            pkt.len = n as u16;
+                                        }
+                                    }
+                                    None => println!("  UDP: no socket for dst_port={}", h.dst_port),
+                                }
+                                }
                             }
                         }
                     }
@@ -560,4 +583,18 @@ pub unsafe fn init() -> Option<VirtioNet> {
         notify_off: 0x3000,   // из cap NOTIFY offset
         notify_mult: 4,        // из notify_off_multiplier
     })
+}
+
+static mut GLOBAL_VN: Option<VirtioNet> = None;
+
+pub unsafe fn set_global(vn: VirtioNet) {
+    GLOBAL_VN = Some(vn);
+}
+
+pub fn get_global() -> Option<&'static VirtioNet> {
+    unsafe { GLOBAL_VN.as_ref() }
+}
+
+pub fn get_global_mut() -> Option<&'static mut VirtioNet> {
+    unsafe { GLOBAL_VN.as_mut() }
 }
