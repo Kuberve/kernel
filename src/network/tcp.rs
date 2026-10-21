@@ -214,16 +214,6 @@ pub fn init() {
 /// Найти соединение по 4-tuple.
 pub unsafe fn find(src_ip: [u8; 4], src_port: u16, dst_port: u16) -> Option<usize> {
     for i in 0..MAX_TCP_CONNS {
-        if CONNS[i].used {
-            println!("  CONNS[{}]: remote={}.{}.{}.{}:{} local=:{} state={:?}",
-                     i,
-                     CONNS[i].remote_ip[0], CONNS[i].remote_ip[1],
-                     CONNS[i].remote_ip[2], CONNS[i].remote_ip[3],
-                     CONNS[i].remote_port, CONNS[i].local_port,
-                     CONNS[i].state);
-        }
-    }
-    for i in 0..MAX_TCP_CONNS {
         if CONNS[i].used
             && CONNS[i].remote_ip == src_ip
             && CONNS[i].remote_port == src_port
@@ -332,6 +322,31 @@ pub unsafe fn handle_incoming(
     if let Some(id) = conn_id {
         let c = get_mut(id).unwrap();
         match c.state {
+            TcpState::FinWait1 => {
+                if h.flags & FLAG_ACK != 0 && h.ack == c.local_seq {
+                    if h.flags & FLAG_FIN != 0 {
+                        c.remote_seq = c.remote_seq.wrapping_add(1);
+                        send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq, FLAG_ACK, 65535, &[]);
+                        c.state = TcpState::Closed;
+                        c.used = false;
+                        println!("TCP client: closed (FinWait1 → FIN-ACK)");
+                    } else {
+                        c.state = TcpState::FinWait2;
+                        println!("TCP client: FinWait2 (нашего FIN подтвердили)");
+                    }
+                }
+            }
+            TcpState::FinWait2 => {
+                if h.flags & FLAG_FIN != 0 {
+                    c.remote_seq = c.remote_seq.wrapping_add(1);
+                    send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                        c.local_seq, c.remote_seq, FLAG_ACK, 65535, &[]);
+                    c.state = TcpState::Closed;
+                    c.used = false;
+                    println!("TCP client: closed (FinWait2 → FIN)");
+                }
+            }
             TcpState::SynSent => {
                 if h.flags & FLAG_SYN != 0 && h.flags & FLAG_ACK != 0
                    && h.ack == c.local_seq.wrapping_add(1) {
@@ -565,4 +580,28 @@ pub unsafe fn tcp_recv(fd: i64, out: &mut [u8]) -> i64 {
     }
     c.rx_len = rem as u16;
     n as i64
+}
+
+pub unsafe fn close(fd: i64) -> i64 {
+    let slot = match find_by_fd(fd) {
+        Some(s) => s,
+        None => return -1,
+    };
+    let c = get_mut(slot).unwrap();
+
+    if c.state != TcpState::Established && c.state != TcpState::CloseWait {
+        c.used = false;
+        return 0;
+    }
+
+    let ok = send_tcp_segment(
+        c.remote_ip, c.remote_port, c.local_port,
+        c.local_seq, c.remote_seq,
+        FLAG_FIN | FLAG_ACK, 65535, &[],
+    );
+    if !ok { return -1; }
+    c.local_seq = c.local_seq.wrapping_add(1);
+    c.state = TcpState::FinWait1;
+    println!("TCP client: FIN sent, FinWait1");
+    0
 }

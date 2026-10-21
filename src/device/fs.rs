@@ -117,8 +117,7 @@ pub unsafe fn fd_close(fd: u64) -> i64 {
         crate::network::socket::close(sid);
     }
     if kind == FdKind::TcpSocket {
-        // MVP: не закрываем conn сразу — ждём FIN/ACK
-        // TODO: отправить FIN, FinWait1 (v0.9.6e)
+        crate::network::tcp::close(fd as i64);
     }
     FD_USED[fd as usize] = false;
     0
