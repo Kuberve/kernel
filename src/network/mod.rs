@@ -7,3 +7,5 @@ pub mod ping;
 pub mod socket;
 
 pub mod udp;
+
+pub mod tcp;
