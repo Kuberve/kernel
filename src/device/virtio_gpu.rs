@@ -343,36 +343,43 @@ pub unsafe fn setup_framebuffer(gpu: &mut VirtioGpu, fb_addr: u64, w: u32, h: u3
     true
 }
 
-pub unsafe fn flush(gpu: &mut VirtioGpu, w: u32, h: u32) -> bool {
+pub unsafe fn flush_region(gpu: &mut VirtioGpu, x: u32, y: u32, w: u32, h: u32) -> bool {
     let mut resp = [0u8; 32];
+    let stride: u64 = 640 * 4;
+    let offset = (y as u64) * stride + (x as u64) * 4;
 
     // TRANSFER_TO_HOST_2D
     let mut c = [0u8; 56];
     c[0..4].copy_from_slice(&CMD_TRANSFER_TO_HOST_2D.to_le_bytes());
-    c[24..28].copy_from_slice(&0u32.to_le_bytes());
-    c[28..32].copy_from_slice(&0u32.to_le_bytes());
+    c[24..28].copy_from_slice(&x.to_le_bytes());
+    c[28..32].copy_from_slice(&y.to_le_bytes());
     c[32..36].copy_from_slice(&w.to_le_bytes());
     c[36..40].copy_from_slice(&h.to_le_bytes());
-    c[40..48].copy_from_slice(&0u64.to_le_bytes());
+    c[40..48].copy_from_slice(&offset.to_le_bytes());   // <-- правильный offset
     c[48..52].copy_from_slice(&1u32.to_le_bytes());
-    if !send_cmd(gpu, &c, &mut resp) {
-        println!("TRANSFER_TO_HOST_2D fail");
-        return false;
-    }
-    println!("virtio-gpu: TRANSFER_TO_HOST_2D OK");
+    if !send_cmd(gpu, &c, &mut resp) { return false; }
 
-    // RESOURCE_FLUSH
+    // RESOURCE_FLUSH (только region)
     let mut f = [0u8; 48];
     f[0..4].copy_from_slice(&0x0104u32.to_le_bytes());
-    f[24..28].copy_from_slice(&0u32.to_le_bytes());
-    f[28..32].copy_from_slice(&0u32.to_le_bytes());
+    f[24..28].copy_from_slice(&x.to_le_bytes());
+    f[28..32].copy_from_slice(&y.to_le_bytes());
     f[32..36].copy_from_slice(&w.to_le_bytes());
     f[36..40].copy_from_slice(&h.to_le_bytes());
     f[40..44].copy_from_slice(&1u32.to_le_bytes());
-    if !send_cmd(gpu, &f, &mut resp) {
-        println!("RESOURCE_FLUSH fail");
-        return false;
-    }
-    println!("virtio-gpu: RESOURCE_FLUSH OK");
-    true
+    send_cmd(gpu, &f, &mut resp)
+}
+
+pub unsafe fn flush(gpu: &mut VirtioGpu, w: u32, h: u32) -> bool {
+    flush_region(gpu, 0, 0, w, h)
+}
+
+static mut GPU: Option<VirtioGpu> = None;
+
+pub unsafe fn set_global(g: VirtioGpu) {
+    GPU = Some(g);
+}
+
+pub fn get_global_mut() -> Option<&'static mut VirtioGpu> {
+    unsafe { GPU.as_mut() }
 }

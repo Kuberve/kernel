@@ -46,32 +46,6 @@ fn read_vbar() -> u64 {
     v
 }
 
-extern "C" fn thread_a() -> ! {
-    let msg = b"A via syscall\n";
-    let mut n = 0u64;
-    loop {
-        n += 1;
-        crate::arch::aarch64::syscall::sys_write(1, msg.as_ptr(), msg.len() as u64);
-        crate::arch::aarch64::syscall::sys_sleep(1);
-        if n == 3 {
-            crate::arch::aarch64::syscall::sys_exit(0);
-        }
-    }
-}
-
-extern "C" fn thread_b() -> ! {
-    let msg = b"B via syscall\n";
-    let mut n = 0u64;
-    loop {
-        n += 1;
-        crate::arch::aarch64::syscall::sys_write(1, msg.as_ptr(), msg.len() as u64);
-        crate::arch::aarch64::syscall::sys_sleep(1);
-        if n == 3 {
-            crate::arch::aarch64::syscall::sys_exit(0);
-        }
-    }
-}
-
 static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
 
 #[no_mangle]
@@ -185,8 +159,6 @@ pub extern "C" fn kmain() -> ! {
 
     sched::init(boot_as);
     unsafe {
-        sched::spawn("A", 1, thread_a);
-        sched::spawn("B", 2, thread_b);
         sched::spawn_el0("uart",    2, 0x40400000, 0x40700000, user_elf);
         sched::spawn_el0("client1", 2, 0x40400000, 0x40700000, user_elf);
         sched::spawn_el0("client2", 2, 0x40400000, 0x40700000, user_elf);
@@ -200,72 +172,44 @@ pub extern "C" fn kmain() -> ! {
 
     println!("Kernel alive. Main becomes idle.");
 
+    // --- virtio-gpu ---
     println!("=== Graphics ===");
     let mut gpu_opt = unsafe { device::virtio_gpu::init() };
     if let Some(mut gpu) = gpu_opt.take() {
         println!("virtio-gpu initialized");
 
-        // Настроить framebuffer
         let fb_addr: u64 = 0x48000000;
         let width = 640u32;
         let height = 480u32;
 
         unsafe {
-            // Обнулить framebuffer
+            // 1. Нулим framebuffer
             core::ptr::write_bytes(fb_addr as *mut u8, 0, (width * height * 4) as usize);
 
-            if device::virtio_gpu::setup_framebuffer(&mut gpu, fb_addr, width, height) {
-                println!("Framebuffer setup OK");
-
-                // Нарисовать
-                let ptr = fb_addr as *mut u32;
-                // Тёмно-синий фон
-                for i in 0..(width * height) {
-                    core::ptr::write_volatile(ptr.add(i as usize), 0x00203050);
-                }
-                // Красный квадрат (формат BGRX: 0x00RRGGBB)
-                for y in 50..150u32 {
-                    for x in 50..150u32 {
-                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x000000FF);
-                    }
-                }
-                // Зелёный
-                for y in 50..150u32 {
-                    for x in 200..300u32 {
-                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x0000FF00);
-                    }
-                }
-                // Синий
-                for y in 50..150u32 {
-                    for x in 350..450u32 {
-                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x00FF0000);
-                    }
-                }
-                // Белая полоса
-                for y in 200..250u32 {
-                    for x in 50..450u32 {
-                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x00FFFFFF);
-                    }
-                }
-
-                // Отправить в host
-                device::virtio_gpu::flush(&mut gpu, width, height);
-                println!("Framebuffer painted and flushed");
-                // Текст поверх фона
-                use device::text;
-                text::draw_string_wrap(50, 300, "Hello, Kuberve!", 0x00FFFFFF, Some(0x00203050));
-                text::draw_string_wrap(50, 330, "Framebuffer working!", 0x00FFFF00, Some(0x00203050));
-                text::draw_string_wrap(50, 360, "virtio-gpu + 8x16 font", 0x00FF00FF, Some(0x00203050));
-
-                device::virtio_gpu::flush(&mut gpu, width, height);
-                println!("Text rendered");
-            } else {
-                println!("Framebuffer setup FAILED");
+            // 2. Создать resource + attach + scanout (КРИТИЧНО!)
+            if !device::virtio_gpu::setup_framebuffer(&mut gpu, fb_addr, width, height) {
+                panic!("Framebuffer setup FAILED");
             }
-        }
+            println!("Framebuffer setup OK");
 
-        // Сохранить gpu в глобальную для будущих flush
-        // (пока просто drop — flush сделан вручную)
+            // 3. Инициализировать консоль (заполнит фон)
+            device::console::init();
+
+            // 4. Нарисовать заголовок
+            device::text::draw_string_wrap(10, 10, "Kuberve Console v0.1", 0x0000FF00, Some(0x00101010));
+            device::text::draw_string_wrap(10, 30, "Type something (a-z, 0-9, space, enter):", 0x00A0A0A0, Some(0x00101010));
+            device::console::console().cursor_y = 60;
+            device::console::console().cursor_x = 10;
+
+            // 5. Отправить на хост (TRANSFER + FLUSH)
+            if !device::virtio_gpu::flush(&mut gpu, width, height) {
+                println!("Initial flush FAILED");
+            }
+
+            // 6. Сохранить gpu глобально для клавиатуры
+            device::virtio_gpu::set_global(gpu);
+        }
+        println!("Graphics ready");
     } else {
         println!("virtio-gpu NOT FOUND");
     }
@@ -312,45 +256,44 @@ pub extern "C" fn kmain() -> ! {
     }
 
     // --- Poll loop ---
-    println!("Entering network poll loop...");
-    let mut ping_sent = false;
+    println!("Entering main loop...");
+    let mut net_poll_counter = 0u32;
     loop {
-        if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
-            let n = unsafe { device::virtio_net::poll_rx(vn) };
-            if n > 0 {
-                println!("poll: processed {} packets", n);
-            }
-
-            // Keyboard
-            if let Some(kbd) = kbd_opt.as_mut() {
-                while let Some(ev) = unsafe { device::virtio_input::poll_events(kbd) } {
-                    if ev.typ == 1 && ev.value == 1 {   // EV_KEY, press
-                        if let Some(c) = device::virtio_input::keycode_to_ascii(ev.code, false) {
-                            if c == b'\n' {
-                                println!("[KBD] ENTER");
-                            } else if c == b' ' {
-                                println!("[KBD] SPACE");
-                            } else {
-                                println!("[KBD] '{}' (code={})", c as char, ev.code);
+        // 1. Клавиатура — ПЕРВОЙ
+        if let Some(kbd) = kbd_opt.as_mut() {
+            while let Some(ev) = unsafe { device::virtio_input::poll_events(kbd) } {
+                if ev.typ == 1 && ev.value == 1 {
+                    if ev.code == 14 {
+                        // BACKSPACE
+                        unsafe {
+                            device::console::backspace();
+                            if let Some(gpu) = device::virtio_gpu::get_global_mut() {
+                                device::console::flush(gpu);
                             }
-                        } else {
-                            println!("[KBD] code={} value={}", ev.code, ev.value);
+                        }
+                    } else if let Some(c) = device::virtio_input::keycode_to_ascii(ev.code, false) {
+                        unsafe {
+                            device::console::putchar(c);
+                            if let Some(gpu) = device::virtio_gpu::get_global_mut() {
+                                device::console::flush(gpu);
+                            }
                         }
                     }
                 }
             }
+        }
 
-            // Как только ARP cache знает gateway — шлём ping один раз
-            if !ping_sent {
-                let gw = [10u8, 0, 2, 2];
-                if unsafe { device::arp::lookup(gw) }.is_some() {
-                    println!("=== Sending ICMP echo request ===");
-                    unsafe { network::ping::send_ping(vn, gw); }
-                    ping_sent = true;
-                }
+        // 2. Сеть — раз в 10 итераций
+        net_poll_counter = net_poll_counter.wrapping_add(1);
+        if net_poll_counter % 10 == 0 {
+            if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
+                let _ = unsafe { device::virtio_net::poll_rx(vn) };
             }
-        } else {
-            unsafe { asm!("wfe") };
+        }
+
+        // 3. wfe раз в 1000
+        if net_poll_counter % 1000 == 0 {
+            unsafe { core::arch::asm!("wfe") };
         }
     }
 }
