@@ -220,11 +220,14 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
                                     };
                                     crate::network::tcp::handle_incoming(src_ip, &h, tcp_payload);
                                 }
-                            } else if protocol == 17 {    // UDP
+                                                        } else if protocol == 17 {
                                 if let Some(h) = crate::network::udp::parse_udp_header(payload) {
-                                    match crate::network::socket::find_by_port(h.dst_port) {
-                                        Some(sid) => {
-                                            println!("  UDP: socket id={}", sid);
+                                    // DHCP?
+                                    if h.dst_port == 68 {
+                                        let udp_payload = if 8 <= payload.len() { &payload[8..] } else { &[] };
+                                        crate::network::dhcp::handle_packet(udp_payload, src_ip);
+                                    } else if let Some(sid) = crate::network::socket::find_by_port(h.dst_port) {
+                                        println!("  UDP: socket id={}", sid);
                                         let mut pkt = crate::network::socket::Packet {
                                             data: [0; crate::network::socket::SOCKET_PKT_MAX],
                                             len: 0,
@@ -240,8 +243,6 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
                                             pkt.len = n as u16;
                                         }
                                     }
-                                    None => println!("  UDP: no socket for dst_port={}", h.dst_port),
-                                }
                                 }
                             }
                         }

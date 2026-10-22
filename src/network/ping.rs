@@ -1,8 +1,6 @@
 use crate::println;
 use crate::device::{virtio_net, arp};
 
-pub const OUR_IP: [u8; 4] = [10, 0, 2, 15];
-
 const PING_ID: u16 = 0x1234;
 static mut PING_SEQ: u16 = 0;
 static mut SEND_TIME: u64 = 0;
@@ -38,8 +36,9 @@ pub unsafe fn send_ping(vn: &mut virtio_net::VirtioNet, dst_ip: [u8; 4]) -> bool
     // IPv4
     let total_len = 20 + icmp_len;
     let mut packet = [0u8; 128];
+    let our_ip = crate::network::dhcp::our_ip();
     crate::network::ip::build_ipv4_header(
-        &mut packet[0..20], total_len as u16, PING_SEQ, 1, OUR_IP, dst_ip);
+        &mut packet[0..20], total_len as u16, PING_SEQ, 1, our_ip, dst_ip);
     packet[20..20 + icmp_len].copy_from_slice(&icmp_buf[..icmp_len]);
 
     // Ethernet frame

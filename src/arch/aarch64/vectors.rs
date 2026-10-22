@@ -561,7 +561,7 @@ unsafe fn send_udp_raw(dst_ip: [u8; 4], dst_port: u16, src_port: u16, payload: &
         None => return -1,
     };
 
-    let our_ip: [u8; 4] = [10, 0, 2, 15];
+    let our_ip = crate::network::dhcp::our_ip();
 
     // UDP
     let mut udp_buf = [0u8; 1500];

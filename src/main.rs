@@ -200,6 +200,11 @@ pub extern "C" fn kmain() -> ! {
 
     println!("Kernel alive. Main becomes idle.");
 
+    // --- DHCP ---
+    if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
+        unsafe { crate::network::dhcp::run(vn); }
+    }
+
     // Helper: send ARP request for target IP
     unsafe fn send_arp(vn: &mut device::virtio_net::VirtioNet, target_ip: [u8; 4]) {
         let our_mac = vn.mac;
