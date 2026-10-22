@@ -17,3 +17,5 @@ pub mod virtio_gpu;
 pub mod font8x16;
 
 pub mod text;
+
+pub mod virtio_input;

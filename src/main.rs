@@ -270,6 +270,15 @@ pub extern "C" fn kmain() -> ! {
         println!("virtio-gpu NOT FOUND");
     }
 
+    // --- virtio-keyboard ---
+    println!("=== Keyboard ===");
+    let mut kbd_opt = unsafe { device::virtio_input::init() };
+    if kbd_opt.is_some() {
+        println!("virtio-keyboard initialized");
+    } else {
+        println!("virtio-keyboard NOT FOUND");
+    }
+
     // --- DHCP ---
     if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
         unsafe { crate::network::dhcp::run(vn); }
@@ -310,6 +319,25 @@ pub extern "C" fn kmain() -> ! {
             let n = unsafe { device::virtio_net::poll_rx(vn) };
             if n > 0 {
                 println!("poll: processed {} packets", n);
+            }
+
+            // Keyboard
+            if let Some(kbd) = kbd_opt.as_mut() {
+                while let Some(ev) = unsafe { device::virtio_input::poll_events(kbd) } {
+                    if ev.typ == 1 && ev.value == 1 {   // EV_KEY, press
+                        if let Some(c) = device::virtio_input::keycode_to_ascii(ev.code, false) {
+                            if c == b'\n' {
+                                println!("[KBD] ENTER");
+                            } else if c == b' ' {
+                                println!("[KBD] SPACE");
+                            } else {
+                                println!("[KBD] '{}' (code={})", c as char, ev.code);
+                            }
+                        } else {
+                            println!("[KBD] code={} value={}", ev.code, ev.value);
+                        }
+                    }
+                }
             }
 
             // Как только ARP cache знает gateway — шлём ping один раз
