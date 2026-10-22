@@ -200,6 +200,68 @@ pub extern "C" fn kmain() -> ! {
 
     println!("Kernel alive. Main becomes idle.");
 
+    println!("=== Graphics ===");
+    let mut gpu_opt = unsafe { device::virtio_gpu::init() };
+    if let Some(mut gpu) = gpu_opt.take() {
+        println!("virtio-gpu initialized");
+
+        // Настроить framebuffer
+        let fb_addr: u64 = 0x48000000;
+        let width = 640u32;
+        let height = 480u32;
+
+        unsafe {
+            // Обнулить framebuffer
+            core::ptr::write_bytes(fb_addr as *mut u8, 0, (width * height * 4) as usize);
+
+            if device::virtio_gpu::setup_framebuffer(&mut gpu, fb_addr, width, height) {
+                println!("Framebuffer setup OK");
+
+                // Нарисовать
+                let ptr = fb_addr as *mut u32;
+                // Тёмно-синий фон
+                for i in 0..(width * height) {
+                    core::ptr::write_volatile(ptr.add(i as usize), 0x00203050);
+                }
+                // Красный квадрат (формат BGRX: 0x00RRGGBB)
+                for y in 50..150u32 {
+                    for x in 50..150u32 {
+                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x000000FF);
+                    }
+                }
+                // Зелёный
+                for y in 50..150u32 {
+                    for x in 200..300u32 {
+                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x0000FF00);
+                    }
+                }
+                // Синий
+                for y in 50..150u32 {
+                    for x in 350..450u32 {
+                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x00FF0000);
+                    }
+                }
+                // Белая полоса
+                for y in 200..250u32 {
+                    for x in 50..450u32 {
+                        core::ptr::write_volatile(ptr.add((y * width + x) as usize), 0x00FFFFFF);
+                    }
+                }
+
+                // Отправить в host
+                device::virtio_gpu::flush(&mut gpu, width, height);
+                println!("Framebuffer painted and flushed");
+            } else {
+                println!("Framebuffer setup FAILED");
+            }
+        }
+
+        // Сохранить gpu в глобальную для будущих flush
+        // (пока просто drop — flush сделан вручную)
+    } else {
+        println!("virtio-gpu NOT FOUND");
+    }
+
     // --- DHCP ---
     if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
         unsafe { crate::network::dhcp::run(vn); }

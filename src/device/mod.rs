@@ -11,3 +11,5 @@ pub mod fs;
 pub mod virtio_net;
 
 pub mod arp;
+
+pub mod virtio_gpu;

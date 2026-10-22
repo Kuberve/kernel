@@ -136,6 +136,31 @@ pub unsafe fn find_virtio_net() -> Option<(u8, u8, u8)> {
     None
 }
 
+/// Найти virtio-gpu (device=0x1050 modern, 0x1042 legacy).
+pub unsafe fn find_virtio_gpu() -> Option<(u8, u8, u8)> {
+    for bus in 0..=255u8 {
+        for dev in 0..32u8 {
+            for func in 0..8u8 {
+                let vendor = config_read32(bus, dev, func, 0x00) & 0xFFFF;
+                if vendor != 0x1AF4 { continue; }
+
+                let device = (config_read32(bus, dev, func, 0x00) >> 16) as u16;
+                if device != 0x1050 && device != 0x1042 { continue; }
+
+                println!("PCIe: virtio-gpu device={:#x} at bus={} dev={} func={}",
+                         device, bus, dev, func);
+
+                let mut cmd = config_read32(bus, dev, func, 0x04);
+                cmd |= (1 << 1) | (1 << 2);
+                config_write32(bus, dev, func, 0x04, cmd);
+
+                return Some((bus, dev, func));
+            }
+        }
+    }
+    None
+}
+
 /// Прочитать размер BAR через запись всех единиц.
 /// Возвращает маску размера (последний установленный бит).
 pub fn bar_size_mask(bus: u8, dev: u8, func: u8, bar_reg: u16) -> u32 {
