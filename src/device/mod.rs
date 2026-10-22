@@ -13,3 +13,7 @@ pub mod virtio_net;
 pub mod arp;
 
 pub mod virtio_gpu;
+
+pub mod font8x16;
+
+pub mod text;

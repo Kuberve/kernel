@@ -251,6 +251,14 @@ pub extern "C" fn kmain() -> ! {
                 // Отправить в host
                 device::virtio_gpu::flush(&mut gpu, width, height);
                 println!("Framebuffer painted and flushed");
+                // Текст поверх фона
+                use device::text;
+                text::draw_string_wrap(50, 300, "Hello, Kuberve!", 0x00FFFFFF, Some(0x00203050));
+                text::draw_string_wrap(50, 330, "Framebuffer working!", 0x00FFFF00, Some(0x00203050));
+                text::draw_string_wrap(50, 360, "virtio-gpu + 8x16 font", 0x00FF00FF, Some(0x00203050));
+
+                device::virtio_gpu::flush(&mut gpu, width, height);
+                println!("Text rendered");
             } else {
                 println!("Framebuffer setup FAILED");
             }
