@@ -550,7 +550,7 @@ pub unsafe extern "C" fn rust_irq_handler(old_sp: u64) -> u64 {
 
 unsafe fn send_udp_raw(dst_ip: [u8; 4], dst_port: u16, src_port: u16, payload: &[u8]) -> i64 {
     use crate::drivers::virtio::net;
-    use crate::device::arp;
+    use crate::network::arp;
 
     let vn = match crate::drivers::virtio::net::get_global_mut() {
         Some(v) => v,

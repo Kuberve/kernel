@@ -1,6 +1,6 @@
 use crate::println;
 use crate::drivers::virtio::net as virtio_net;
-use crate::device::arp;
+use crate::network::arp;
 
 const PING_ID: u16 = 0x1234;
 static mut PING_SEQ: u16 = 0;

@@ -185,9 +185,9 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
 
                                 // ARP reply? кэшируем
                 if ethertype == 0x0806 {
-                    if let Some((spa, sha, op)) = crate::device::arp::parse_arp(frame) {
+                    if let Some((spa, sha, op)) = crate::network::arp::parse_arp(frame) {
                         if op == 2 {
-                            crate::device::arp::cache_insert(spa, sha);
+                            crate::network::arp::cache_insert(spa, sha);
                         }
                     }
                 }

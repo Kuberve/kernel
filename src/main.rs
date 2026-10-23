@@ -11,9 +11,10 @@ mod allocator;
 mod arch;
 use crate::arch::aarch64::{gic, timer, vectors, sched};
 
-mod device;
 mod drivers;
+
 mod gfx;
+
 mod fs;
 
 mod network;
