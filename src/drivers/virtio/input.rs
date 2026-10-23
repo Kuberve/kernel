@@ -266,6 +266,7 @@ pub unsafe fn poll_events(input: &mut VirtioInput) -> Option<KeyEvent> {
 
 pub fn keycode_to_ascii(code: u16, shift: bool) -> Option<u8> {
     match code {
+        // Digits + shifted punctuation
         2  => Some(if shift { b'!' } else { b'1' }),
         3  => Some(if shift { b'@' } else { b'2' }),
         4  => Some(if shift { b'#' } else { b'3' }),
@@ -276,6 +277,9 @@ pub fn keycode_to_ascii(code: u16, shift: bool) -> Option<u8> {
         9  => Some(if shift { b'*' } else { b'8' }),
         10 => Some(if shift { b'(' } else { b'9' }),
         11 => Some(if shift { b')' } else { b'0' }),
+        12 => Some(if shift { b'_' } else { b'-' }),
+        13 => Some(if shift { b'+' } else { b'=' }),
+        // Letters
         16 => Some(if shift { b'Q' } else { b'q' }),
         17 => Some(if shift { b'W' } else { b'w' }),
         18 => Some(if shift { b'E' } else { b'e' }),
@@ -286,6 +290,8 @@ pub fn keycode_to_ascii(code: u16, shift: bool) -> Option<u8> {
         23 => Some(if shift { b'I' } else { b'i' }),
         24 => Some(if shift { b'O' } else { b'o' }),
         25 => Some(if shift { b'P' } else { b'p' }),
+        26 => Some(if shift { b'{' } else { b'[' }),
+        27 => Some(if shift { b'}' } else { b']' }),
         30 => Some(if shift { b'A' } else { b'a' }),
         31 => Some(if shift { b'S' } else { b's' }),
         32 => Some(if shift { b'D' } else { b'd' }),
@@ -295,6 +301,10 @@ pub fn keycode_to_ascii(code: u16, shift: bool) -> Option<u8> {
         36 => Some(if shift { b'J' } else { b'j' }),
         37 => Some(if shift { b'K' } else { b'k' }),
         38 => Some(if shift { b'L' } else { b'l' }),
+        39 => Some(if shift { b':' } else { b';' }),
+        40 => Some(if shift { b'"' } else { b'\'' }),
+        41 => Some(if shift { b'~' } else { b'`' }),
+        43 => Some(if shift { b'|' } else { b'\\' }),
         44 => Some(if shift { b'Z' } else { b'z' }),
         45 => Some(if shift { b'X' } else { b'x' }),
         46 => Some(if shift { b'C' } else { b'c' }),
@@ -302,8 +312,15 @@ pub fn keycode_to_ascii(code: u16, shift: bool) -> Option<u8> {
         48 => Some(if shift { b'B' } else { b'b' }),
         49 => Some(if shift { b'N' } else { b'n' }),
         50 => Some(if shift { b'M' } else { b'm' }),
+        51 => Some(if shift { b'<' } else { b',' }),
+        52 => Some(if shift { b'>' } else { b'.' }),
+        53 => Some(if shift { b'?' } else { b'/' }),
         28 => Some(b'\n'),
         57 => Some(b' '),
         _  => None,
     }
+}
+
+pub fn is_shift_code(code: u16) -> bool {
+    code == 42 || code == 54   // LSHIFT, RSHIFT
 }

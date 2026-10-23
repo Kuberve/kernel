@@ -198,10 +198,12 @@ pub extern "C" fn kmain() -> ! {
             gfx::console::init();
 
             // 4. Нарисовать заголовок
-            gfx::text::draw_string_wrap(10, 10, "Kuberve Console v0.1", 0x0000FF00, Some(0x00101010));
+            gfx::text::draw_string_wrap(10, 10, "Kuberve Console v0.10.6", 0x0000FF00, Some(0x00101010));
             gfx::text::draw_string_wrap(10, 30, "Type something (a-z, 0-9, space, enter):", 0x00A0A0A0, Some(0x00101010));
-            gfx::console::console().cursor_y = 60;
+            gfx::console::console().cursor_y = 30;
             gfx::console::console().cursor_x = 10;
+
+            gfx::shell::print_prompt();
 
             // 5. Отправить на хост (TRANSFER + FLUSH)
             if !drivers::virtio::gpu::flush(&mut gpu, width, height) {
@@ -275,12 +277,18 @@ pub extern "C" fn kmain() -> ! {
         // 1. Keyboard — обработать все события, БЕЗ per-event flush
         if let Some(kbd) = kbd_opt.as_mut() {
             while let Some(ev) = unsafe { drivers::virtio::input::poll_events(kbd) } {
-                if ev.typ == 1 && ev.value == 1 {
+                if ev.typ != 1 { continue; }
+                if drivers::virtio::input::is_shift_code(ev.code) {
+                    if ev.value == 1 { gfx::shell::shift_down(); }
+                    else if ev.value == 0 { gfx::shell::shift_up(); }
+                    continue;
+                }
+                if ev.value == 1 {
                     if ev.code == 14 {
-                        unsafe { gfx::console::backspace(); }
+                        unsafe { gfx::shell::backspace(); }
                         need_flush = true;
-                    } else if let Some(c) = unsafe { drivers::virtio::input::keycode_to_ascii(ev.code, false) } {
-                        unsafe { gfx::console::putchar(c); }
+                    } else if let Some(c) = drivers::virtio::input::keycode_to_ascii(ev.code, gfx::shell::shift()) {
+                        unsafe { gfx::shell::input(c); }
                         need_flush = true;
                     }
                 }
@@ -312,7 +320,7 @@ pub extern "C" fn kmain() -> ! {
                 let new_y = core::cmp::min(my, 479);
                 unsafe { gfx::cursor::move_to(new_x, new_y); }
 
-                // Flush old + new cursor regions (bounding box)
+                // Flush только old + new позиции
                 if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
                     let min_x = old_x.min(new_x).saturating_sub(3);
                     let min_y = old_y.min(new_y).saturating_sub(3);

@@ -68,11 +68,12 @@ pub unsafe fn putchar(c: u8) {
             CONSOLE.cursor_x = 10;
             CONSOLE.cursor_y += CONSOLE.line_height;
         }
-        // Mark dirty только там, где нарисовали
         mark_dirty(draw_x, draw_y);
     }
-    if CONSOLE.cursor_y + CONSOLE.line_height > FB_HEIGHT {
-        CONSOLE.cursor_y = 10;
+
+    // Scroll если нужно
+    while CONSOLE.cursor_y + CONSOLE.line_height > FB_HEIGHT {
+        scroll();
     }
 }
 
@@ -86,4 +87,38 @@ pub unsafe fn backspace() {
 
 pub unsafe fn flush(gpu: &mut crate::drivers::virtio::gpu::VirtioGpu) {
     crate::drivers::virtio::gpu::flush(gpu, FB_WIDTH, FB_HEIGHT);
+}
+
+unsafe fn scroll() {
+    // Скрыть курсор (восстановить SAVED_BG под ним — крестик не попадёт в copy)
+    crate::gfx::cursor::hide();
+
+    let ptr = FB_ADDR as *mut u32;
+    let line_h = CONSOLE.line_height as usize;
+    let pixels_per_row = FB_WIDTH as usize;
+    let rows = FB_HEIGHT as usize;
+
+    if line_h >= rows { return; }
+
+    let src = ptr.add(line_h * pixels_per_row);
+    let n = (rows - line_h) * pixels_per_row;
+    core::ptr::copy(src, ptr, n);
+
+    let clear_start = ptr.add((rows - line_h) * pixels_per_row);
+    let clear_n = line_h * pixels_per_row;
+    for i in 0..clear_n {
+        core::ptr::write_volatile(clear_start.add(i), BG_COLOR);
+    }
+
+    CONSOLE.cursor_y -= CONSOLE.line_height;
+
+    // Показать курсор (сохранить новый текст под ним, нарисовать крестик)
+    crate::gfx::cursor::show();
+
+    // Полный flush (весь экран сдвинулся)
+    DIRTY_X0 = 0;
+    DIRTY_Y0 = 0;
+    DIRTY_X1 = FB_WIDTH;
+    DIRTY_Y1 = FB_HEIGHT;
+    HAS_DIRTY = true;
 }
