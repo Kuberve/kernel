@@ -1,6 +1,6 @@
 use core::arch::asm;
 use crate::println;
-use crate::arch::aarch64::ipc::{Queue, Message, EMPTY_QUEUE};
+use crate::ipc::{Queue, Message, EMPTY_QUEUE};
 
 pub const STACK_SIZE: usize = 64 * 1024;
 pub const MAX_THREADS: usize = 16;

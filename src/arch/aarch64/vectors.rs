@@ -229,7 +229,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             old_sp
         }
         syscall::SYS_SEND => {
-            let ptr = a1 as *const crate::arch::aarch64::ipc::Message;
+            let ptr = a1 as *const crate::ipc::Message;
             let mut msg = *ptr;
 
             // Если WRITE (tag=1): скопировать байты из user ptr в msg.data
@@ -256,7 +256,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
         }
         syscall::SYS_RECV => {
             let msg = sched::ipc_recv_block();
-            let ptr = a0 as *mut crate::arch::aarch64::ipc::Message;
+            let ptr = a0 as *mut crate::ipc::Message;
             *ptr = msg;
             ctx.x0 = 0;
             old_sp
@@ -267,7 +267,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             old_sp
         }
         syscall::SYS_TRY_SEND => {
-            let ptr = a1 as *const crate::arch::aarch64::ipc::Message;
+            let ptr = a1 as *const crate::ipc::Message;
             let mut msg = *ptr;
 
             if msg.tag == 1 {
@@ -291,7 +291,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             old_sp
         }
         syscall::SYS_TRY_RECV => {
-            let ptr = a0 as *mut crate::arch::aarch64::ipc::Message;
+            let ptr = a0 as *mut crate::ipc::Message;
             match sched::ipc_recv_nonblock() {
                 Some(m) => { *ptr = m; ctx.x0 = 0; }
                 None => { ctx.x0 = u64::MAX; }
@@ -524,7 +524,8 @@ pub unsafe extern "C" fn rust_irq_handler(old_sp: u64) -> u64 {
         30 => crate::arch::aarch64::timer::handle_irq(),
         33 => {
             // UART IRQ: disable, EOI, сообщение в uart_server (pid=2)
-            use crate::arch::aarch64::{gic, sched, ipc::Message};
+            use crate::arch::aarch64::{gic, sched};
+            use crate::ipc::Message;
             unsafe {
                 gic::disable_irq(33);
             }

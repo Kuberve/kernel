@@ -17,6 +17,8 @@ mod gfx;
 
 mod fs;
 
+mod ipc;
+
 mod network;
 
 mod panic;

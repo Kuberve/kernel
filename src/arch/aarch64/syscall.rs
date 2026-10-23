@@ -1,5 +1,5 @@
 use core::arch::asm;
-use crate::arch::aarch64::ipc::Message;
+use crate::ipc::Message;
 
 pub use kuberve_abi::sys as sys_num;
 

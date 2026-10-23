@@ -11,5 +11,3 @@ pub mod syscall;
 pub mod mmu;
 
 pub mod phys;
-
-pub mod ipc;
