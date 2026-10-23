@@ -50,3 +50,21 @@ pub unsafe fn free_page(addr: usize) {
     let bit = i % 64;
     BITMAP[idx] &= !(1u64 << bit);
 }
+
+pub fn total_pages() -> usize {
+    unsafe { PAGE_COUNT }
+}
+
+pub fn used_pages() -> usize {
+    let mut count = 0usize;
+    unsafe {
+        for i in 0..PAGE_COUNT {
+            let idx = i / 64;
+            let bit = i % 64;
+            if BITMAP[idx] & (1u64 << bit) != 0 {
+                count += 1;
+            }
+        }
+    }
+    count
+}
