@@ -315,19 +315,19 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
                 Ok(s) => s,
                 Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
             };
-            ctx.x0 = unsafe { crate::device::fs::fd_open(path, a2) } as u64;
+            ctx.x0 = unsafe { crate::fs::fd::fd_open(path, a2) } as u64;
             old_sp
         }
         syscall::SYS_READ => {
-            ctx.x0 = unsafe { crate::device::fs::fd_read(a0, a1, a2) } as u64;
+            ctx.x0 = unsafe { crate::fs::fd::fd_read(a0, a1, a2) } as u64;
             old_sp
         }
         syscall::SYS_CLOSE => {
-            ctx.x0 = unsafe { crate::device::fs::fd_close(a0) } as u64;
+            ctx.x0 = unsafe { crate::fs::fd::fd_close(a0) } as u64;
             old_sp
         }
         syscall::SYS_WRITE_FILE => {
-            ctx.x0 = unsafe { crate::device::fs::fd_write(a0, a1, a2) } as u64;
+            ctx.x0 = unsafe { crate::fs::fd::fd_write(a0, a1, a2) } as u64;
             old_sp
         }
         syscall::SYS_SOCKET => {
@@ -337,7 +337,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             }
             if a1 == 1 {
                 // SOCK_STREAM (TCP)
-                let fd = unsafe { crate::device::fs::fd_alloc_tcp_socket() };
+                let fd = unsafe { crate::fs::fd::fd_alloc_tcp_socket() };
                 ctx.x0 = if fd < 0 { u64::MAX } else { fd as u64 };
                 old_sp
             } else if a1 == 2 {
@@ -346,7 +346,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
                     Some(s) => s,
                     None => { ctx.x0 = u64::MAX; return old_sp; }
                 };
-                let fd = unsafe { crate::device::fs::fd_alloc_socket(sid) };
+                let fd = unsafe { crate::fs::fd::fd_alloc_socket(sid) };
                 if fd < 0 {
                     unsafe { crate::network::socket::close(sid); }
                     ctx.x0 = u64::MAX;
@@ -360,7 +360,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             }
         }
         syscall::SYS_BIND => {
-            let sid = match unsafe { crate::device::fs::fd_socket_id(a0) } {
+            let sid = match unsafe { crate::fs::fd::fd_socket_id(a0) } {
                 Some(s) => s,
                 None => { ctx.x0 = u64::MAX; return old_sp; }
             };
@@ -371,7 +371,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
         syscall::SYS_SENDTO => {
             let a3 = ctx.x3;
             let a4 = ctx.x4;
-            let sid = match unsafe { crate::device::fs::fd_socket_id(a0) } {
+            let sid = match unsafe { crate::fs::fd::fd_socket_id(a0) } {
                 Some(s) => s,
                 None => { ctx.x0 = u64::MAX; return old_sp; }
             };
@@ -402,7 +402,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
         syscall::SYS_RECVFROM => {
             let a3 = ctx.x3;
             let a4 = ctx.x4;
-            let sid = match unsafe { crate::device::fs::fd_socket_id(a0) } {
+            let sid = match unsafe { crate::fs::fd::fd_socket_id(a0) } {
                 Some(s) => s,
                 None => { ctx.x0 = u64::MAX; return old_sp; }
             };

@@ -14,6 +14,7 @@ use crate::arch::aarch64::{gic, timer, vectors, sched};
 mod device;
 mod drivers;
 mod gfx;
+mod fs;
 
 mod network;
 
@@ -119,9 +120,9 @@ pub extern "C" fn kmain() -> ! {
     }
 
     // Mount FAT32 (глобально)
-    match unsafe { device::fat32::mount_global(&nvme) } {
+    match unsafe { fs::fat32::mount_global(&nvme) } {
         Ok(()) => {
-            let fs = device::fat32::get().unwrap();
+            let fs = fs::fat32::get().unwrap();
             println!("FAT32 mounted: label='{}'", fs.label_str());
         }
         Err(e) => panic!("FAT32 mount failed: {:?}", e),
@@ -142,7 +143,7 @@ pub extern "C" fn kmain() -> ! {
     static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
     let mut user_elf: &[u8] = USER_ELF;
     {
-        let fs = device::fat32::get().unwrap();
+        let fs = fs::fat32::get().unwrap();
         if let Some((cluster, size, is_dir)) = unsafe { fs.find_entry(fs.root_cluster, "USER.ELF") } {
             if !is_dir && size as usize <= 131072 {
                 println!("Loading user.elf from disk: {} bytes", size);

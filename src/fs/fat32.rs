@@ -1,5 +1,5 @@
 use crate::println;
-use crate::device::vfs::{VfsError, VfsResult};
+use crate::fs::vfs::{VfsError, VfsResult};
 use crate::drivers::nvme::{Nvme, read_blocks, write_blocks};
 use crate::arch::aarch64::phys;
 

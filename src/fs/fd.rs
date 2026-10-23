@@ -1,5 +1,5 @@
-use crate::device::fat32;
-use crate::device::fat32::NvmeBuf;
+use crate::fs::fat32;
+use crate::fs::fat32::NvmeBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FdKind {
