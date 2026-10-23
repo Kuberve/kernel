@@ -1,6 +1,6 @@
 use crate::println;
 use crate::device::vfs::{VfsError, VfsResult};
-use crate::device::nvme::{Nvme, read_blocks, write_blocks};
+use crate::drivers::nvme::{Nvme, read_blocks, write_blocks};
 use crate::arch::aarch64::phys;
 
 #[repr(C, align(4096))]
@@ -132,7 +132,7 @@ impl Fat32 {
         let start_sector = self.first_data_sector as u64
             + (cluster as u64 - 2) * self.sectors_per_cluster as u64;
         let num_sectors = self.sectors_per_cluster as u16;
-        crate::device::nvme::write_blocks(nvme, 1, start_sector, num_sectors, buf_pa)
+        crate::drivers::nvme::write_blocks(nvme, 1, start_sector, num_sectors, buf_pa)
     }
 
     /// Прочитать FAT entry → следующий кластер. 0x0FFFFFFF = EOC.

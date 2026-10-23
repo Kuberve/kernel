@@ -31,7 +31,7 @@ impl core::fmt::Write for Writer {
 macro_rules! print {
     ($($arg:tt)*) => {
         let _ = core::fmt::Write::write_fmt(
-            &mut $crate::uart::Writer,
+            &mut $crate::drivers::uart_pl011::Writer,
             format_args!($($arg)*),
         );
     };
@@ -39,9 +39,9 @@ macro_rules! print {
 
 #[macro_export]
 macro_rules! println {
-    () => { $crate::uart::puts("\n") };
+    () => { $crate::drivers::uart_pl011::puts("\n") };
     ($($arg:tt)*) => {{
         $crate::print!($($arg)*);
-        $crate::uart::puts("\n");
+        $crate::drivers::uart_pl011::puts("\n");
     }};
 }

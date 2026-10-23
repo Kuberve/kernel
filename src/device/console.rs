@@ -1,5 +1,5 @@
 use crate::device::text;
-use crate::device::virtio_gpu;
+use crate::drivers::virtio::gpu;
 
 const FB_ADDR: u64 = 0x48000000;
 const FB_WIDTH: u32 = 640;
@@ -84,6 +84,6 @@ pub unsafe fn backspace() {
     }
 }
 
-pub unsafe fn flush(gpu: &mut virtio_gpu::VirtioGpu) {
-    virtio_gpu::flush(gpu, FB_WIDTH, FB_HEIGHT);
+pub unsafe fn flush(gpu: &mut crate::drivers::virtio::gpu::VirtioGpu) {
+    crate::drivers::virtio::gpu::flush(gpu, FB_WIDTH, FB_HEIGHT);
 }

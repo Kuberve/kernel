@@ -256,7 +256,8 @@ pub unsafe fn send_tcp_segment(
     window: u16,
     payload: &[u8],
 ) -> bool {
-    use crate::device::{virtio_net, arp};
+    use crate::drivers::virtio::net as virtio_net;
+use crate::device::arp;
 
     let vn = match virtio_net::get_global_mut() {
         Some(v) => v,

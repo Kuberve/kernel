@@ -85,7 +85,7 @@ pub fn write(fd: u64, buf: *const u8, len: u64) -> i64 {
     }
     for i in 0..len as usize {
         let c = unsafe { *buf.add(i) };
-        crate::uart::putc(c);
+        crate::drivers::uart_pl011::putc(c);
     }
     len as i64
 }

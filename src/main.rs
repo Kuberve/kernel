@@ -12,10 +12,10 @@ mod arch;
 use crate::arch::aarch64::{gic, timer, vectors, sched};
 
 mod device;
+mod drivers;
 
 mod network;
 
-mod uart;
 mod panic;
 mod loader;
 
@@ -85,11 +85,11 @@ pub extern "C" fn kmain() -> ! {
     unsafe { crate::network::tcp::listen(8080); }
 
     // --- PCIe + NVMe ---
-    let nvme_bar = unsafe { device::pci::init() };
+    let nvme_bar = unsafe { drivers::pci::init() };
     let mut nvme = match nvme_bar {
         Some(bar) => {
             println!("NVMe BAR0 = {:#x}", bar);
-            match unsafe { device::nvme::init(bar) } {
+            match unsafe { drivers::nvme::init(bar) } {
                 Some(n) => n,
                 None => panic!("NVMe init failed"),
             }
@@ -101,7 +101,7 @@ pub extern "C" fn kmain() -> ! {
     // Identify Controller
     let id_ctrl_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page") };
     unsafe { core::ptr::write_bytes(id_ctrl_pa as *mut u8, 0, 4096); }
-    if let Some(id) = unsafe { device::nvme::identify_controller(&mut nvme, id_ctrl_pa as u64) } {
+    if let Some(id) = unsafe { drivers::nvme::identify_controller(&mut nvme, id_ctrl_pa as u64) } {
         let model = core::str::from_utf8(&id.model).unwrap_or("?").trim_end();
         println!("NVMe model: '{}'", model);
     }
@@ -109,11 +109,11 @@ pub extern "C" fn kmain() -> ! {
     // Identify Namespace 1
     let id_ns_pa = unsafe { crate::arch::aarch64::phys::alloc_page().expect("no page") };
     unsafe { core::ptr::write_bytes(id_ns_pa as *mut u8, 0, 4096); }
-    if let Some(ns) = unsafe { device::nvme::identify_namespace(&mut nvme, id_ns_pa as u64, 1) } {
+    if let Some(ns) = unsafe { drivers::nvme::identify_namespace(&mut nvme, id_ns_pa as u64, 1) } {
         println!("NVMe NS1: nsze={} lbads={}", ns.nsze, ns.lbads);
     }
 
-    if !unsafe { device::nvme::create_io_queues(&mut nvme) } {
+    if !unsafe { drivers::nvme::create_io_queues(&mut nvme) } {
         panic!("I/O queues failed");
     }
 
@@ -128,11 +128,11 @@ pub extern "C" fn kmain() -> ! {
 
     // --- virtio-net ---
     println!("=== Network ===");
-    let vn_init = unsafe { device::virtio_net::init() };
+    let vn_init = unsafe { drivers::virtio::net::init() };
     if let Some(vn) = vn_init {
         println!("virtio-net initialized");
-        unsafe { device::virtio_net::setup_rx(&vn); }
-        unsafe { device::virtio_net::set_global(vn); }
+        unsafe { drivers::virtio::net::setup_rx(&vn); }
+        unsafe { drivers::virtio::net::set_global(vn); }
     } else {
         println!("virtio-net NOT FOUND");
     }
@@ -174,7 +174,7 @@ pub extern "C" fn kmain() -> ! {
 
     // --- virtio-gpu ---
     println!("=== Graphics ===");
-    let mut gpu_opt = unsafe { device::virtio_gpu::init() };
+    let mut gpu_opt = unsafe { drivers::virtio::gpu::init() };
     if let Some(mut gpu) = gpu_opt.take() {
         println!("virtio-gpu initialized");
 
@@ -187,7 +187,7 @@ pub extern "C" fn kmain() -> ! {
             core::ptr::write_bytes(fb_addr as *mut u8, 0, (width * height * 4) as usize);
 
             // 2. Создать resource + attach + scanout (КРИТИЧНО!)
-            if !device::virtio_gpu::setup_framebuffer(&mut gpu, fb_addr, width, height) {
+            if !drivers::virtio::gpu::setup_framebuffer(&mut gpu, fb_addr, width, height) {
                 panic!("Framebuffer setup FAILED");
             }
             println!("Framebuffer setup OK");
@@ -202,12 +202,12 @@ pub extern "C" fn kmain() -> ! {
             device::console::console().cursor_x = 10;
 
             // 5. Отправить на хост (TRANSFER + FLUSH)
-            if !device::virtio_gpu::flush(&mut gpu, width, height) {
+            if !drivers::virtio::gpu::flush(&mut gpu, width, height) {
                 println!("Initial flush FAILED");
             }
 
             // 6. Сохранить gpu глобально для клавиатуры
-            device::virtio_gpu::set_global(gpu);
+            drivers::virtio::gpu::set_global(gpu);
         }
         println!("Graphics ready");
     } else {
@@ -216,7 +216,7 @@ pub extern "C" fn kmain() -> ! {
 
     // --- virtio-keyboard ---
     println!("=== Keyboard ===");
-    let mut kbd_opt = unsafe { device::virtio_input::init() };
+    let mut kbd_opt = unsafe { drivers::virtio::input::init() };
     if kbd_opt.is_some() {
         println!("virtio-keyboard initialized");
     } else {
@@ -224,12 +224,12 @@ pub extern "C" fn kmain() -> ! {
     }
 
     // --- DHCP ---
-    if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
+    if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
         unsafe { crate::network::dhcp::run(vn); }
     }
 
     // Helper: send ARP request for target IP
-    unsafe fn send_arp(vn: &mut device::virtio_net::VirtioNet, target_ip: [u8; 4]) {
+    unsafe fn send_arp(vn: &mut drivers::virtio::net::VirtioNet, target_ip: [u8; 4]) {
         let our_mac = vn.mac;
         let mut arp = [0u8; 60];
         for i in 0..6 { arp[i] = 0xFF; }
@@ -247,10 +247,10 @@ pub extern "C" fn kmain() -> ! {
 
         println!("=== ARP: who has {}.{}.{}.{}? ===",
                  target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
-        device::virtio_net::send_packet(vn, &arp);
+        drivers::virtio::net::send_packet(vn, &arp);
     }
 
-    if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
+    if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
         unsafe { send_arp(vn, [10, 0, 2, 2]); }   // gateway
         unsafe { send_arp(vn, [10, 0, 2, 3]); }   // DNS
     }
@@ -261,20 +261,20 @@ pub extern "C" fn kmain() -> ! {
     loop {
         // 1. Клавиатура — ПЕРВОЙ
         if let Some(kbd) = kbd_opt.as_mut() {
-            while let Some(ev) = unsafe { device::virtio_input::poll_events(kbd) } {
+            while let Some(ev) = unsafe { drivers::virtio::input::poll_events(kbd) } {
                 if ev.typ == 1 && ev.value == 1 {
                     if ev.code == 14 {
                         // BACKSPACE
                         unsafe {
                             device::console::backspace();
-                            if let Some(gpu) = device::virtio_gpu::get_global_mut() {
+                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
                                 device::console::flush(gpu);
                             }
                         }
-                    } else if let Some(c) = device::virtio_input::keycode_to_ascii(ev.code, false) {
+                    } else if let Some(c) = drivers::virtio::input::keycode_to_ascii(ev.code, false) {
                         unsafe {
                             device::console::putchar(c);
-                            if let Some(gpu) = device::virtio_gpu::get_global_mut() {
+                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
                                 device::console::flush(gpu);
                             }
                         }
@@ -286,8 +286,8 @@ pub extern "C" fn kmain() -> ! {
         // 2. Сеть — раз в 10 итераций
         net_poll_counter = net_poll_counter.wrapping_add(1);
         if net_poll_counter % 10 == 0 {
-            if let Some(vn) = unsafe { device::virtio_net::get_global_mut() } {
-                let _ = unsafe { device::virtio_net::poll_rx(vn) };
+            if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
+                let _ = unsafe { drivers::virtio::net::poll_rx(vn) };
             }
         }
 

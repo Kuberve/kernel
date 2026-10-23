@@ -1,5 +1,5 @@
 use crate::println;
-use crate::device::pci::{config_read32, config_write32, bar_size_mask, assign_bar64};
+use crate::drivers::pci::{config_read32, config_write32, bar_size_mask, assign_bar64};
 use crate::arch::aarch64::phys;
 
 // ============================================================
@@ -335,7 +335,7 @@ pub unsafe fn send_packet(vn: &mut VirtioNet, data: &[u8]) -> bool {
 }
 
 pub unsafe fn init() -> Option<VirtioNet> {
-    let (bus, dev, func) = crate::device::pci::find_virtio_net()?;
+    let (bus, dev, func) = crate::drivers::pci::find_virtio_net()?;
 
     // Modern virtio: MMIO в BAR4 (reg 0x20), 64-bit
     let bar4_lo = config_read32(bus, dev, func, 0x20);

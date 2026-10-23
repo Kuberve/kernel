@@ -1,6 +1,6 @@
 use crate::println;
 use crate::arch::aarch64::phys;
-use crate::device::pci::{config_read32, config_write32};
+use crate::drivers::pci::{config_read32, config_write32};
 
 // MMIO helpers
 unsafe fn read_u8(b: u64, o: u64) -> u8 { core::ptr::read_volatile((b+o) as *const u8) }
@@ -43,7 +43,7 @@ pub struct VirtioInput {
 const NUM_EVENTS: usize = 256;
 
 pub unsafe fn init() -> Option<VirtioInput> {
-    let (bus, dev, func) = crate::device::pci::find_virtio_keyboard()?;
+    let (bus, dev, func) = crate::drivers::pci::find_virtio_keyboard()?;
 
     let bar4_lo = config_read32(bus, dev, func, 0x20);
     let bar4_hi = config_read32(bus, dev, func, 0x24);

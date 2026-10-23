@@ -85,8 +85,8 @@ fn build_dhcp(msg_type: u8, requested_ip: Option<[u8;4]>, server_id: Option<[u8;
 }
 
 /// Отправить DHCP через virtio-net. src_ip = 0.0.0.0, dst = broadcast.
-unsafe fn send_dhcp(vn: &mut crate::device::virtio_net::VirtioNet, buf: &[u8], len: usize) -> bool {
-    use crate::device::virtio_net;
+unsafe fn send_dhcp(vn: &mut crate::drivers::virtio::net::VirtioNet, buf: &[u8], len: usize) -> bool {
+    use crate::drivers::virtio::net;
 
     // UDP: src=68, dst=67
     let mut udp_buf = [0u8; 320];
@@ -115,7 +115,7 @@ unsafe fn send_dhcp(vn: &mut crate::device::virtio_net::VirtioNet, buf: &[u8], l
     frame[14..14 + total_len].copy_from_slice(&packet[..total_len]);
 
     let send_len = if frame_len < 60 { 60 } else { frame_len };
-    virtio_net::send_packet(vn, &frame[..send_len])
+    crate::drivers::virtio::net::send_packet(vn, &frame[..send_len])
 }
 
 /// Вызывается из `virtio_net::poll_rx` для UDP на порт 68.
@@ -195,7 +195,7 @@ impl core::fmt::Display for FmtIp {
 }
 
 /// Запустить DHCP: DISCOVER → OFFER → REQUEST → ACK.
-pub unsafe fn run(vn: &mut crate::device::virtio_net::VirtioNet) -> bool {
+pub unsafe fn run(vn: &mut crate::drivers::virtio::net::VirtioNet) -> bool {
     use crate::arch::aarch64::sched;
 
     IFACE_MAC = vn.mac;
@@ -218,7 +218,7 @@ pub unsafe fn run(vn: &mut crate::device::virtio_net::VirtioNet) -> bool {
     for _ in 0..5 {
         sched::sleep(1);
         for _ in 0..1000 {
-            crate::device::virtio_net::poll_rx(vn);
+            crate::drivers::virtio::net::poll_rx(vn);
         }
         if GOT_OFFER { break; }
     }
@@ -237,7 +237,7 @@ pub unsafe fn run(vn: &mut crate::device::virtio_net::VirtioNet) -> bool {
     for _ in 0..5 {
         sched::sleep(1);
         for _ in 0..1000 {
-            crate::device::virtio_net::poll_rx(vn);
+            crate::drivers::virtio::net::poll_rx(vn);
         }
         if GOT_ACK { break; }
     }
