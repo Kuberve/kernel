@@ -166,7 +166,7 @@ pub extern "C" fn kmain() -> ! {
         sched::spawn_el0("client2", 2, 0x40400000, 0x40700000, user_elf);
     }
 
-    timer::start(1);
+    timer::start();
 
     println!("  VBAR_EL1  = {:#x}", read_vbar());
     println!("Enabling interrupts...");
@@ -225,6 +225,15 @@ pub extern "C" fn kmain() -> ! {
         println!("virtio-keyboard NOT FOUND");
     }
 
+    // --- virtio-tablet ---
+    println!("=== Mouse ===");
+    let mut tablet_opt = unsafe { drivers::virtio::tablet::init() };
+    if tablet_opt.is_some() {
+        println!("virtio-tablet initialized");
+    } else {
+        println!("virtio-tablet NOT FOUND");
+    }
+
     // --- DHCP ---
     if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
         unsafe { crate::network::dhcp::run(vn); }
@@ -259,43 +268,85 @@ pub extern "C" fn kmain() -> ! {
 
     // --- Poll loop ---
     println!("Entering main loop...");
-    let mut net_poll_counter = 0u32;
+    let mut net_counter = 0u32;
     loop {
-        // 1. Клавиатура — ПЕРВОЙ
+        let mut need_flush = false;
+
+        // 1. Keyboard — обработать все события, БЕЗ per-event flush
         if let Some(kbd) = kbd_opt.as_mut() {
             while let Some(ev) = unsafe { drivers::virtio::input::poll_events(kbd) } {
                 if ev.typ == 1 && ev.value == 1 {
                     if ev.code == 14 {
-                        // BACKSPACE
-                        unsafe {
-                            gfx::console::backspace();
-                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                                gfx::console::flush(gpu);
-                            }
-                        }
-                    } else if let Some(c) = drivers::virtio::input::keycode_to_ascii(ev.code, false) {
-                        unsafe {
-                            gfx::console::putchar(c);
-                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                                gfx::console::flush(gpu);
-                            }
-                        }
+                        unsafe { gfx::console::backspace(); }
+                        need_flush = true;
+                    } else if let Some(c) = unsafe { drivers::virtio::input::keycode_to_ascii(ev.code, false) } {
+                        unsafe { gfx::console::putchar(c); }
+                        need_flush = true;
                     }
                 }
             }
         }
 
-        // 2. Сеть — раз в 10 итераций
-        net_poll_counter = net_poll_counter.wrapping_add(1);
-        if net_poll_counter % 10 == 0 {
+        // 2. Mouse — coalesce, только последняя позиция
+        if let Some(tablet) = tablet_opt.as_mut() {
+            let mut mx = unsafe { gfx::cursor::MOUSE_X };
+            let mut my = unsafe { gfx::cursor::MOUSE_Y };
+            let mut moved = false;
+
+            while let Some(ev) = unsafe { drivers::virtio::tablet::poll_events(tablet) } {
+                if ev.typ == 3 {
+                    if ev.code == 0 && tablet.abs_max_x > 0 {
+                        mx = ((ev.value as u64 * 640) / tablet.abs_max_x as u64) as u32;
+                        moved = true;
+                    } else if ev.code == 1 && tablet.abs_max_y > 0 {
+                        my = ((ev.value as u64 * 480) / tablet.abs_max_y as u64) as u32;
+                        moved = true;
+                    }
+                }
+            }
+
+            if moved {
+                let old_x = unsafe { gfx::cursor::MOUSE_X };
+                let old_y = unsafe { gfx::cursor::MOUSE_Y };
+                let new_x = core::cmp::min(mx, 639);
+                let new_y = core::cmp::min(my, 479);
+                unsafe { gfx::cursor::move_to(new_x, new_y); }
+
+                // Flush old + new cursor regions (bounding box)
+                if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
+                    let min_x = old_x.min(new_x).saturating_sub(3);
+                    let min_y = old_y.min(new_y).saturating_sub(3);
+                    let max_x = old_x.max(new_x) + 4;
+                    let max_y = old_y.max(new_y) + 4;
+                    let w = max_x.saturating_sub(min_x);
+                    let h = max_y.saturating_sub(min_y);
+                    unsafe { drivers::virtio::gpu::flush_region(gpu, min_x, min_y, w, h); }
+                }
+            }
+        }
+
+        // 3. Flush текста
+        if need_flush {
+            unsafe { gfx::cursor::hide(); }   // восстановить пиксели под курсором
+            if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
+                unsafe { gfx::console::flush(gpu); }
+            }
+            unsafe { gfx::cursor::show(); }   // снова нарисовать поверх текста
+            if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
+                let (cx, cy, cw, ch) = gfx::cursor::dirty_rect();
+                unsafe { drivers::virtio::gpu::flush_region(gpu, cx, cy, cw, ch); }
+            }
+        }
+
+        // 4. Сеть — реже
+        net_counter = net_counter.wrapping_add(1);
+        if net_counter % 20 == 0 {
             if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
                 let _ = unsafe { drivers::virtio::net::poll_rx(vn) };
             }
         }
 
-        // 3. wfe раз в 1000
-        if net_poll_counter % 1000 == 0 {
-            unsafe { core::arch::asm!("wfe") };
-        }
+        // 5. wfe — проснуться на IRQ (таймер 100 Гц → 10 мс)
+        unsafe { core::arch::asm!("wfe") };
     }
 }

@@ -182,6 +182,35 @@ pub unsafe fn find_virtio_keyboard() -> Option<(u8, u8, u8)> {
     None
 }
 
+pub unsafe fn find_virtio_tablet() -> Option<(u8, u8, u8)> {
+    for bus in 0..=255u8 {
+        for dev in 0..32u8 {
+            for func in 0..8u8 {
+                let vendor = config_read32(bus, dev, func, 0x00) & 0xFFFF;
+                if vendor != 0x1AF4 { continue; }
+                let device = (config_read32(bus, dev, func, 0x00) >> 16) as u16;
+                if device != 0x1052 { continue; }
+
+                let class_reg = config_read32(bus, dev, func, 0x08);
+                let base_class = (class_reg >> 24) & 0xFF;
+                let subclass   = (class_reg >> 16) & 0xFF;
+
+                // Tablet: class 0x09, subclass 0x80 (PCI_CLASS_INPUT_OTHER)
+                // Mouse: class 0x09, subclass 0x02 (PCI_CLASS_INPUT_MOUSE)
+                if base_class == 0x09 && (subclass == 0x80 || subclass == 0x02) {
+                    println!("PCIe: virtio-tablet at bus={} dev={} func={} (subclass={:#x})",
+                             bus, dev, func, subclass);
+                    let mut cmd = config_read32(bus, dev, func, 0x04);
+                    cmd |= (1 << 1) | (1 << 2);
+                    config_write32(bus, dev, func, 0x04, cmd);
+                    return Some((bus, dev, func));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Прочитать размер BAR через запись всех единиц.
 /// Возвращает маску размера (последний установленный бит).
 pub fn bar_size_mask(bus: u8, dev: u8, func: u8, bar_reg: u16) -> u32 {

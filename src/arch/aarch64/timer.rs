@@ -1,7 +1,11 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::arch::asm;
+use crate::println;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
+static PERIOD_TICKS: AtomicU64 = AtomicU64::new(0);
+
+pub const TICK_HZ: u64 = 100;
 
 fn freq() -> u64 {
     let f: u64;
@@ -10,13 +14,13 @@ fn freq() -> u64 {
 }
 
 pub fn init() {
-    // Пока ничего не настраиваем — start() делает всю работу.
+    let f = freq();
+    PERIOD_TICKS.store(f / TICK_HZ, Ordering::Relaxed);
     TICKS.store(0, Ordering::Relaxed);
 }
 
-/// Запустить таймер с интервалом в секундах.
-pub fn start(seconds: u64) {
-    let tval = freq() * seconds;
+pub fn start() {
+    let tval = PERIOD_TICKS.load(Ordering::Relaxed);
     unsafe {
         asm!("msr CNTP_TVAL_EL0, {}", in(reg) tval);
         asm!("msr CNTP_CTL_EL0, {}", in(reg) 1u64);
@@ -24,12 +28,13 @@ pub fn start(seconds: u64) {
 }
 
 fn recharge() {
-    unsafe {
-        asm!("msr CNTP_TVAL_EL0, {}", in(reg) freq());
-    }
+    let tval = PERIOD_TICKS.load(Ordering::Relaxed);
+    unsafe { asm!("msr CNTP_TVAL_EL0, {}", in(reg) tval); }
 }
 
 pub fn handle_irq() {
     TICKS.fetch_add(1, Ordering::Relaxed);
     recharge();
 }
+
+pub fn tick_count() -> u64 { TICKS.load(Ordering::Relaxed) }

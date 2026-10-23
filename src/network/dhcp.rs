@@ -216,7 +216,7 @@ pub unsafe fn run(vn: &mut crate::drivers::virtio::net::VirtioNet) -> bool {
 
     // Ждём OFFER
     for _ in 0..5 {
-        sched::sleep(1);
+        sched::sleep(crate::arch::aarch64::timer::TICK_HZ);
         for _ in 0..1000 {
             crate::drivers::virtio::net::poll_rx(vn);
         }
@@ -235,7 +235,7 @@ pub unsafe fn run(vn: &mut crate::drivers::virtio::net::VirtioNet) -> bool {
     }
 
     for _ in 0..5 {
-        sched::sleep(1);
+        sched::sleep(crate::arch::aarch64::timer::TICK_HZ);
         for _ in 0..1000 {
             crate::drivers::virtio::net::poll_rx(vn);
         }

@@ -221,7 +221,8 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             old_sp
         }
         syscall::SYS_SLEEP => {
-            sched::sleep(a0);
+            let ticks = a0.saturating_mul(crate::arch::aarch64::timer::TICK_HZ);
+            sched::sleep(ticks);
             old_sp
         }
         syscall::SYS_GETPID => {
