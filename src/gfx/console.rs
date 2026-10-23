@@ -1,4 +1,4 @@
-use crate::device::text;
+use crate::gfx::text;
 use crate::drivers::virtio::gpu;
 
 const FB_ADDR: u64 = 0x48000000;

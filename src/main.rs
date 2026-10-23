@@ -13,6 +13,7 @@ use crate::arch::aarch64::{gic, timer, vectors, sched};
 
 mod device;
 mod drivers;
+mod gfx;
 
 mod network;
 
@@ -193,13 +194,13 @@ pub extern "C" fn kmain() -> ! {
             println!("Framebuffer setup OK");
 
             // 3. Инициализировать консоль (заполнит фон)
-            device::console::init();
+            gfx::console::init();
 
             // 4. Нарисовать заголовок
-            device::text::draw_string_wrap(10, 10, "Kuberve Console v0.1", 0x0000FF00, Some(0x00101010));
-            device::text::draw_string_wrap(10, 30, "Type something (a-z, 0-9, space, enter):", 0x00A0A0A0, Some(0x00101010));
-            device::console::console().cursor_y = 60;
-            device::console::console().cursor_x = 10;
+            gfx::text::draw_string_wrap(10, 10, "Kuberve Console v0.1", 0x0000FF00, Some(0x00101010));
+            gfx::text::draw_string_wrap(10, 30, "Type something (a-z, 0-9, space, enter):", 0x00A0A0A0, Some(0x00101010));
+            gfx::console::console().cursor_y = 60;
+            gfx::console::console().cursor_x = 10;
 
             // 5. Отправить на хост (TRANSFER + FLUSH)
             if !drivers::virtio::gpu::flush(&mut gpu, width, height) {
@@ -266,16 +267,16 @@ pub extern "C" fn kmain() -> ! {
                     if ev.code == 14 {
                         // BACKSPACE
                         unsafe {
-                            device::console::backspace();
+                            gfx::console::backspace();
                             if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                                device::console::flush(gpu);
+                                gfx::console::flush(gpu);
                             }
                         }
                     } else if let Some(c) = drivers::virtio::input::keycode_to_ascii(ev.code, false) {
                         unsafe {
-                            device::console::putchar(c);
+                            gfx::console::putchar(c);
                             if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                                device::console::flush(gpu);
+                                gfx::console::flush(gpu);
                             }
                         }
                     }

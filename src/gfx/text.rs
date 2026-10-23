@@ -1,4 +1,4 @@
-use crate::device::font8x16::get_bitmap;
+use crate::gfx::font::get_bitmap;
 
 const FB_ADDR: u64 = 0x48000000;
 const FB_WIDTH: u32 = 640;
