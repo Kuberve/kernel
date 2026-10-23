@@ -6,7 +6,7 @@ extern crate alloc;
 
 use core::arch::{asm, global_asm};
 
-mod allocator;
+mod lib;
 
 mod arch;
 use crate::arch::aarch64::{gic, timer, vectors, sched};
@@ -20,9 +20,6 @@ mod fs;
 mod ipc;
 
 mod network;
-
-mod panic;
-mod loader;
 
 static USER_ELF: &[u8] =
     include_bytes!("../../user/target/aarch64-unknown-none/release/user");

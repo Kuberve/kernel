@@ -37,7 +37,7 @@ unsafe impl GlobalAlloc for BumpAlloc {
 }
 
 #[global_allocator]
-static GLOBAL: BumpAlloc = BumpAlloc;
+pub static GLOBAL: BumpAlloc = BumpAlloc;
 
 #[alloc_error_handler]
 fn alloc_error(layout: Layout) -> ! {

@@ -130,7 +130,7 @@ pub unsafe fn spawn_el0(
 
     // Активировать AS, загрузить ELF по vaddr (0x40400000) — попадёт в свой code region
     crate::arch::aarch64::mmu::activate(&as_);
-    crate::loader::load_elf(elf_bytes);
+    crate::lib::loader::load_elf(elf_bytes);
     crate::arch::aarch64::mmu::activate(&BOOT_AS);
 
     // Kernel stack (SP_EL1) — как раньше
