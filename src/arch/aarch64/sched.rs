@@ -105,7 +105,7 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
         brk: 0,
         id: id as u32,
         name,
-        as_: crate::arch::aarch64::mmu::create_as(id),
+        as_: crate::arch::aarch64::mmu::create_as(id, (id + 1) as u16),
     };
 
     println!("spawned '{}' id={} sp={:#x}", name, id, sp);
@@ -126,7 +126,7 @@ pub unsafe fn spawn_el0(
     COUNT += 1;
 
     // Создать AS с per-process code/stack/heap
-    let as_ = crate::arch::aarch64::mmu::create_as(id);
+    let as_ = crate::arch::aarch64::mmu::create_as(id, (id + 1) as u16);
 
     // Активировать AS, загрузить ELF по vaddr (0x40400000) — попадёт в свой code region
     crate::arch::aarch64::mmu::activate(&as_);
@@ -231,6 +231,13 @@ pub unsafe fn on_tick(old_sp: u64) -> u64 {
 
     // 5. Вернуть SP того, кого запускать
     if next == IDLE {
+        // ВАЖНО: kernel kmain работает в identity-маппинге boot AS.
+        // После того как IRQ вытеснил kmain и scheduler ушёл в user AS,
+        // при возврате в IDLE TTBR0 остался от user → kmain пишет в чужие PA.
+        // Восстанавливаем boot AS.
+        if BOOT_AS.valid {
+            crate::arch::aarch64::mmu::activate(&BOOT_AS);
+        }
         IDLE_SP
     } else {
         THREADS[next].state = State::Running;
@@ -324,6 +331,9 @@ pub unsafe fn on_yield(old_sp: u64) -> u64 {
     }
 
     if next == IDLE {
+        if BOOT_AS.valid {
+            crate::arch::aarch64::mmu::activate(&BOOT_AS);
+        }
         IDLE_SP
     } else {
         THREADS[next].state = State::Running;

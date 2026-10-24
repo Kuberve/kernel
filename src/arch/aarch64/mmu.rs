@@ -15,11 +15,12 @@ pub struct AddressSpace {
     pub l1_pa: u64,
     pub l2_pa: u64,
     pub l2_dev_pa: u64,
+    pub asid: u16,
     pub valid: bool,
 }
 
 pub const EMPTY_AS: AddressSpace = AddressSpace {
-    l0_pa: 0, l1_pa: 0, l2_pa: 0, l2_dev_pa: 0, valid: false,
+    l0_pa: 0, l1_pa: 0, l2_pa: 0, l2_dev_pa: 0, asid: 0, valid: false,
 };
 
 const MAIR: u64 = 0xFF | (0x00 << 8);
@@ -27,7 +28,8 @@ const MAIR: u64 = 0xFF | (0x00 << 8);
 const TCR: u64 = (16 << 0)
     | (1 << 8) | (1 << 10) | (3 << 12) | (0 << 14)
     | (16 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30)
-    | (2 << 32);   // IPS = 2 (40-bit PA, 1 TB)
+    | (2 << 32)
+    | (1 << 36);   // AS=1: ASID in TTBR0[63:48]
 
 pub const BLOCK: u64 = 0b01;
 pub const TABLE: u64 = 0b11;
@@ -60,7 +62,7 @@ pub unsafe fn enable() {
 }
 
 /// Создать новое адресное пространство.
-pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
+pub unsafe fn create_as(thread_id: usize, asid: u16) -> AddressSpace {
     let l0_pa = phys::alloc_page().expect("no page for L0");
     let l1_pa = phys::alloc_page().expect("no page for L1");
     let l2_pa = phys::alloc_page().expect("no page for L2");
@@ -80,16 +82,8 @@ pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
     l1.entries[0] = l2_dev_pa as u64 | TABLE;
     l1.entries[1] = l2_pa as u64 | TABLE;
 
-    // ECAM for PCIe (QEMU virt: 0x4010000000, 256 MiB)
-    // 0x4010000000 >> 30 = 0x100 = 256, попадает в L1[256]
-    l1.entries[256] = 0x4000000000u64
-        | ATTR_DEVICE
-        | AF
-        | PXN
-        | UXN
-        | BLOCK;
+    l1.entries[256] = 0x4000000000u64 | ATTR_DEVICE | AF | PXN | UXN | BLOCK;
 
-    // Device region
     for i in 0..512 {
         let pa = (i as u64) * 0x200000;
         l2_dev.entries[i] = pa | ATTR_DEVICE | AF | PXN | UXN | BLOCK;
@@ -97,24 +91,31 @@ pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
     l2_dev.entries[72] = 0x09000000u64
         | ATTR_DEVICE | AF | AP_RW_ALL | PXN | UXN | BLOCK;
 
-    // Kernel code/data
     l2.entries[0] = 0x40000000u64 | ATTR_NORMAL | AF | SH_INNER | BLOCK;
     l2.entries[1] = 0x40200000u64 | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
 
-    // User code (L2[2]) — ОБЩИЙ регион (один ELF на всех, identity)
-    l2.entries[2] = 0x40400000u64 | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | PXN | BLOCK;
+    if asid == 0 {
+        // === Boot AS: kernel работает в identity, phys::alloc_page() использует
+        //     VA = PA. Оставляем l2[2..5] identity, kernel-only, не исполняемо из EL0.
+        l2.entries[2] = 0x40400000u64 | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
+        l2.entries[3] = 0x40600000u64 | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
+        l2.entries[4] = 0x40800000u64 | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
+    } else {
+        // === User AS: изоляция. PA раскладка (проверена на отсутствие пересечений):
+        //     phys alloc:  0x403bc000..0x46000000
+        //     stack PA:    0x46000000..0x48000000   (16 × 2MB)
+        //     framebuffer: 0x48000000..0x48200000
+        //     code  PA:    0x49000000..0x4B000000   (16 × 2MB)
+        //     heap  PA:    0x4D000000..0x4F000000   (16 × 2MB)
+        let code_pa  = 0x49000000u64 + (thread_id as u64) * 0x200000;
+        let stack_pa = 0x46000000u64 + (thread_id as u64) * 0x200000;
+        let heap_pa  = 0x4D000000u64 + (thread_id as u64) * 0x200000;
 
-    // User stack (L2[3]) — свой 2MB регион на процесс
-    // tid=0 → 0x46000000, tid=1 → 0x46200000, ..., tid=15 → 0x47E00000
-    let stack_region = 0x46000000u64 + (thread_id as u64) * 0x200000;
-    l2.entries[3] = stack_region | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
+        l2.entries[2] = code_pa  | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | PXN        | BLOCK;  // user exec
+        l2.entries[3] = stack_pa | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN  | BLOCK;  // stack
+        l2.entries[4] = heap_pa  | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN  | BLOCK;  // heap
+    }
 
-    // User heap (L2[4]) — СВОЙ для каждого процесса
-    // tid=0 → 0x40800000, tid=1 → 0x40A00000, ..., tid=15 → 0x42600000
-    let heap_region = 0x40800000u64 + (thread_id as u64) * 0x200000;
-    l2.entries[4] = heap_region | ATTR_NORMAL | AF | SH_INNER | AP_RW_ALL | UXN | PXN | BLOCK;
-
-    // L2[5..512] — kernel identity (общие для всех)
     for i in 5..512 {
         let pa = 0x40000000u64 + (i as u64) * 0x200000;
         l2.entries[i] = pa | ATTR_NORMAL | AF | SH_INNER | UXN | PXN | BLOCK;
@@ -125,15 +126,18 @@ pub unsafe fn create_as(thread_id: usize) -> AddressSpace {
         l1_pa: l1_pa as u64,
         l2_pa: l2_pa as u64,
         l2_dev_pa: l2_dev_pa as u64,
+        asid,
         valid: true,
     }
 }
 
-/// Активировать AS: записать TTBR0 и сбросить TLB.
+/// Активировать AS. ASID в TTBR0[63:48], PA в [47:0].
+///
+/// Без tlbi: TLB тегируется по ASID, записи разных AS невидимы друг другу.
+/// TCR_EL1.AS=1 включает эту схему; A1=0 => ASID в TTBR0.
 pub unsafe fn activate(as_: &AddressSpace) {
-    asm!("msr ttbr0_el1, {}", in(reg) as_.l0_pa);
-    asm!("dsb sy");
-    asm!("tlbi vmalle1");
+    let ttbr0_val = (as_.l0_pa & 0x0000_FFFF_FFFF_FFFF) | ((as_.asid as u64) << 48);
+    asm!("msr ttbr0_el1, {}", in(reg) ttbr0_val);
     asm!("dsb sy");
     asm!("isb");
 }
