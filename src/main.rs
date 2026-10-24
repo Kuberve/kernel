@@ -198,8 +198,8 @@ pub extern "C" fn kmain() -> ! {
             gfx::console::init();
 
             // 4. Нарисовать заголовок
-            gfx::text::draw_string_wrap(10, 10, "Kuberve Console v0.10.6", 0x0000FF00, Some(0x00101010));
-            gfx::text::draw_string_wrap(10, 30, "Type something (a-z, 0-9, space, enter):", 0x00A0A0A0, Some(0x00101010));
+            gfx::text::draw_string_wrap(10, 10, "Kuberve Console v0.10.7", 0x0000FF00, Some(0x00101010));
+            gfx::text::draw_string_wrap(10, 30, "", 0x00A0A0A0, Some(0x00101010));
             gfx::console::console().cursor_y = 30;
             gfx::console::console().cursor_x = 10;
 
@@ -214,6 +214,31 @@ pub extern "C" fn kmain() -> ! {
             drivers::virtio::gpu::set_global(gpu);
         }
         println!("Graphics ready");
+
+        // --- Windows demo ---
+        unsafe {
+            use gfx::wm;
+            wm::init();
+            // НЕпересекающиеся окна (x: 50-270 и 350-590)
+            wm::add_window(50,  200, 220, 140, "About", &[
+                "Kuberve v0.10.7",
+                "aarch64 OS with GUI",
+                "click title to drag",
+                "click X to close",
+            ]);
+            wm::add_window(350, 200, 240, 160, "System", &[
+                "IPC: Message (64B)",
+                "net: ARP/TCP/DHCP",
+                "fs:  NVMe + FAT32",
+                "gfx: virtio-gpu 2D",
+            ]);
+            println!("Windows opened");
+
+            // Явный flush, чтобы окна появились СРАЗУ
+            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
+                drivers::virtio::gpu::flush(gpu, 640, 480);
+            }
+        }
     } else {
         println!("virtio-gpu NOT FOUND");
     }
@@ -300,6 +325,8 @@ pub extern "C" fn kmain() -> ! {
             let mut mx = unsafe { gfx::cursor::MOUSE_X };
             let mut my = unsafe { gfx::cursor::MOUSE_Y };
             let mut moved = false;
+            let mut btn_down = false;
+            let mut btn_up = false;
 
             while let Some(ev) = unsafe { drivers::virtio::tablet::poll_events(tablet) } {
                 if ev.typ == 3 {
@@ -310,17 +337,31 @@ pub extern "C" fn kmain() -> ! {
                         my = ((ev.value as u64 * 480) / tablet.abs_max_y as u64) as u32;
                         moved = true;
                     }
+                } else if ev.typ == 1 && ev.code == 0x110 {
+                    // BTN_LEFT
+                    if ev.value == 1 { btn_down = true; }
+                    else if ev.value == 0 { btn_up = true; }
                 }
             }
 
-            if moved {
+            // 1. Обновить позицию курсора (визуально)
+            // Позиция и флаг drag
+            let drag_active = unsafe { gfx::wm::wm().drag_idx.is_some() };
+
+            if moved && drag_active {
+                let (fx, fy, fw, fh) = unsafe { gfx::wm::drag_to(mx, my) };
+                if fw > 0 && fh > 0 {
+                    if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
+                        unsafe { drivers::virtio::gpu::flush_region(gpu, fx, fy, fw, fh); }
+                    }
+                }
+            } else if moved {
+                // Обычное движение курсора
                 let old_x = unsafe { gfx::cursor::MOUSE_X };
                 let old_y = unsafe { gfx::cursor::MOUSE_Y };
                 let new_x = core::cmp::min(mx, 639);
                 let new_y = core::cmp::min(my, 479);
                 unsafe { gfx::cursor::move_to(new_x, new_y); }
-
-                // Flush только old + new позиции
                 if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
                     let min_x = old_x.min(new_x).saturating_sub(3);
                     let min_y = old_y.min(new_y).saturating_sub(3);
@@ -330,6 +371,38 @@ pub extern "C" fn kmain() -> ! {
                     let h = max_y.saturating_sub(min_y);
                     unsafe { drivers::virtio::gpu::flush_region(gpu, min_x, min_y, w, h); }
                 }
+            }
+
+            // 2. Кнопка вниз
+            if btn_down {
+                unsafe {
+                    let (cx, cy) = (gfx::cursor::MOUSE_X, gfx::cursor::MOUSE_Y);
+                    if let Some(idx) = gfx::wm::find_at(cx, cy) {
+                        if gfx::wm::hit_close(idx, cx, cy) {
+                            gfx::wm::close_window(idx);
+                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
+                                drivers::virtio::gpu::flush(gpu, 640, 480);
+                            }
+                        } else if gfx::wm::hit_title(idx, cx, cy) {
+                            gfx::wm::focus(idx);
+                            gfx::wm::start_drag(idx, cx, cy);
+                            // focus redraw делает 2 окна — flush весь экран
+                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
+                                drivers::virtio::gpu::flush(gpu, 640, 480);
+                            }
+                        } else {
+                            gfx::wm::focus(idx);
+                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
+                                drivers::virtio::gpu::flush(gpu, 640, 480);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Кнопка вверх
+            if btn_up {
+                unsafe { gfx::wm::end_drag(); }
             }
         }
 
