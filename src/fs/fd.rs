@@ -16,6 +16,7 @@ static mut FD_SOCKET_ID: [usize; MAX_FDS] = [0; MAX_FDS];
 static mut FD_FIRST_CLUSTER: [u32; MAX_FDS] = [0; MAX_FDS];
 static mut FD_SIZE: [u32; MAX_FDS] = [0; MAX_FDS];
 static mut FD_OFFSET: [u32; MAX_FDS] = [0; MAX_FDS];
+static mut FD_PARENT_CLUSTER: [u32; MAX_FDS] = [0; MAX_FDS];
 
 static mut READ_BUF:  NvmeBuf = NvmeBuf([0; 4096]);
 static mut WRITE_BUF: NvmeBuf = NvmeBuf([0; 4096]);
@@ -44,6 +45,21 @@ pub unsafe fn fd_open(path: &str, flags: u64) -> i64 {
         }
     };
 
+    // parent_cluster — для update_dir_size в fd_write (nested paths)
+    let parent_cluster = if let Some(idx) = path.rfind('/') {
+        let parent = if idx == 0 { "/" } else { &path[..idx] };
+        if parent == "/" {
+            fs.root_cluster
+        } else {
+            match fs.find_entry_by_path(parent) {
+                Some((c, _, true)) => c,
+                _ => fs.root_cluster,   // fallback (path в root)
+            }
+        }
+    } else {
+        fs.root_cluster
+    };
+
     for i in 0..MAX_FDS {
         if !FD_USED[i] {
             FD_USED[i] = true;
@@ -51,6 +67,7 @@ pub unsafe fn fd_open(path: &str, flags: u64) -> i64 {
             FD_FIRST_CLUSTER[i] = first_cluster;
             FD_SIZE[i] = size;
             FD_OFFSET[i] = 0;
+            FD_PARENT_CLUSTER[i] = parent_cluster;
             return i as i64;
         }
     }
@@ -189,7 +206,8 @@ pub unsafe fn fd_write(fd: u64, buf: u64, len: u64) -> i64 {
 
     // Обновить size в dir entry
     if new_size != size {
-        if !fs.update_dir_size(fs.root_cluster, first_cluster, new_size) { return -1; }
+        let parent = FD_PARENT_CLUSTER[fd];
+        if !fs.update_dir_size(parent, first_cluster, new_size) { return -1; }
         FD_SIZE[fd] = new_size;
     }
 
