@@ -27,13 +27,15 @@ pub unsafe fn fd_open(path: &str, flags: u64) -> i64 {
         None => return -1,
     };
 
-    let (first_cluster, size) = match fs.find_entry(fs.root_cluster, path) {
+    let (first_cluster, size) = match fs.find_entry_by_path(path) {
         Some((c, s, is_dir)) => {
             if is_dir { return -1; }
             (c, s)
         }
         None => {
             if flags & kuberve_abi::flags::O_CREAT != 0 {
+                // TODO: create_file_by_path для вложенных путей.
+                // Сейчас создаёт только в root — для init.cfg (O_RDONLY) не задействовано.
                 match fs.create_file(fs.root_cluster, path) {
                     Some((c, s)) => (c, s),
                     None => return -1,
