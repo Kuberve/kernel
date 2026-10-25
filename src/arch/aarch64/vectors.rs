@@ -463,6 +463,29 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             ctx.x0 = n as u64;
             old_sp
         }
+        syscall::SYS_SPAWN => {
+            // path (a0, a1) игнорируем для MVP — всегда спавним USER.ELF
+            // из pre-loaded USER_ELF_BUF (identity во всех AS через l2[1]).
+            let priority = a2 as u8;
+
+            let size = unsafe { crate::USER_ELF_SIZE };
+            if size == 0 || size > 131072 {
+                // USER.ELF не был загружен с диска (fallback include_bytes,
+                // который мы не обрабатываем в handler'е).
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+
+            let elf_ptr = unsafe { core::ptr::addr_of!(crate::USER_ELF_BUF) as *const u8 };
+            let elf_bytes = unsafe { core::slice::from_raw_parts(elf_ptr, size) };
+
+            let result = unsafe { sched::spawn_el0_from_buf("child", priority, elf_bytes) };
+            ctx.x0 = match result {
+                Some(id) => id as u64,
+                None => u64::MAX,
+            };
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(),
         _ => {
             crate::println!("unknown syscall {}", num);

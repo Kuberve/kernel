@@ -125,22 +125,41 @@ pub unsafe fn spawn_el0(
     }
     COUNT += 1;
 
-    // Создать AS с per-process code/stack/heap
-    let as_ = crate::arch::aarch64::mmu::create_as(id, (id + 1) as u16);
+    // Сохранить caller's TTBR0 (boot AS при вызове из kmain,
+    // init AS при вызове из sys_spawn SVC handler'а)
+    let caller_ttbr0: u64;
+    asm!("mrs {}, TTBR0_EL1", out(reg) caller_ttbr0);
 
-    // Активировать AS, загрузить ELF по vaddr (0x40400000) — попадёт в свой code region
+    // Сохранить caller's TTBR0 (boot AS при вызове из kmain,
+    // init AS при вызове из sys_spawn SVC handler'а)
+    let caller_ttbr0: u64;
+    asm!("mrs {}, TTBR0_EL1", out(reg) caller_ttbr0);
+
+    // КРИТИЧНО: activate(&BOOT_AS) перед create_as.
+    //
+    // phys::alloc_page() уже раздал ~285 страниц (NVMe, FAT32, virtio-net 256 RX,
+    // gpu, kbd, tablet), следующая выдача — PA > 0x40400000.
+    // create_as пишет в l0/l1/l2 по VA = PA (identity), что верно только в BOOT AS.
+    // В init AS (l2[2..5] per-thread) VA 0x404XXXXX → PA 0x490XXXXX →
+    // page tables создаются в code region, activate(&as_) читает нули → fault.
+    if BOOT_AS.valid {
+        crate::arch::aarch64::mmu::activate(&BOOT_AS);
+    }
+
+    let as_ = crate::arch::aarch64::mmu::create_as(id, (id + 1) as u16);
     crate::arch::aarch64::mmu::activate(&as_);
     crate::lib::loader::load_elf(elf_bytes);
-    crate::arch::aarch64::mmu::activate(&BOOT_AS);
 
-    // Kernel stack (SP_EL1) — как раньше
+    asm!("msr ttbr0_el1, {}", in(reg) caller_ttbr0);
+    asm!("dsb sy");
+    asm!("isb");
+
     let top = (STACKS[id].as_ptr() as u64 + STACK_SIZE as u64) & !0xF;
     let sp = top - CTX_SIZE;
     let p = sp as *mut u64;
     for i in 0..(CTX_SIZE / 8) {
         core::ptr::write_volatile(p.add(i as usize), 0);
     }
-
     core::ptr::write_volatile(p.add(0), user_entry);
     core::ptr::write_volatile(p.add(1), 0x000u64);
 
@@ -159,6 +178,21 @@ pub unsafe fn spawn_el0(
     };
 
     println!("spawned '{}' (EL0) id={} ksp={:#x} usp={:#x}", name, id, sp, usp);
+}
+
+/// Спавнит поток из уже загруженного в .bss буфера USER.ELF.
+/// Вызывается из SYS_SPAWN handler'а — использует pre-loaded буфер
+/// (identity во всех AS через l2[1]), а не phys::alloc_page (который
+/// в user AS мапится не в identity).
+pub unsafe fn spawn_el0_from_buf(
+    name: &'static str,
+    priority: u8,
+    elf_bytes: &[u8],
+) -> Option<usize> {
+    let id_before = COUNT;
+    let usp = 0x40700000u64 + (id_before as u64) * 0x80000;
+    spawn_el0(name, priority, 0x40400000, usp, elf_bytes);
+    if COUNT > id_before { Some(id_before) } else { None }
 }
 
 fn pick_next(current: usize) -> usize {
@@ -253,20 +287,15 @@ pub unsafe fn on_tick(old_sp: u64) -> u64 {
 
 /// Поток засыпает на `ticks` тиков. Не занимает CPU.
 pub unsafe fn sleep(ticks: u64) {
-    if CURRENT == IDLE {
-        return;
-    }
+    if CURRENT == IDLE { return; }
     let me = CURRENT;
     THREADS[me].state = State::Sleeping;
     THREADS[me].sleep_until = TICK + ticks;
 
-    // Ждём, пока планировщик не сменит наш state на Ready
     loop {
         asm!("msr daifclr, #2");
         asm!("wfe");
-        if THREADS[me].state != State::Sleeping {
-            return;
-        }
+        if THREADS[me].state != State::Sleeping { return; }
     }
 }
 

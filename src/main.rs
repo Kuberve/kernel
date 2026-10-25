@@ -48,7 +48,8 @@ fn read_vbar() -> u64 {
     v
 }
 
-static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
+pub static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
+pub static mut USER_ELF_SIZE: usize = 0;
 
 #[no_mangle]
 pub extern "C" fn kmain() -> ! {
@@ -78,7 +79,7 @@ pub extern "C" fn kmain() -> ! {
     println!("phys: heap from {:#x} to {:#x}", kernel_end, ram_end);
     unsafe { crate::arch::aarch64::phys::init(kernel_end, ram_end); }
 
-    let boot_as = unsafe { crate::arch::aarch64::mmu::create_as(0) };
+    let boot_as = unsafe { crate::arch::aarch64::mmu::create_as(0, 0) };
     unsafe { crate::arch::aarch64::mmu::activate(&boot_as); }
     unsafe { crate::arch::aarch64::mmu::enable(); }
     println!("MMU enabled.");
@@ -140,17 +141,17 @@ pub extern "C" fn kmain() -> ! {
     }
 
     // Загрузить user.elf с диска
-    static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
     let mut user_elf: &[u8] = USER_ELF;
     {
         let fs = fs::fat32::get().unwrap();
         if let Some((cluster, size, is_dir)) = unsafe { fs.find_entry(fs.root_cluster, "USER.ELF") } {
             if !is_dir && size as usize <= 131072 {
                 println!("Loading user.elf from disk: {} bytes", size);
-                let buf_pa = &raw const USER_ELF_BUF as u64;
+                let buf_pa = core::ptr::addr_of_mut!(USER_ELF_BUF) as u64;
                 match unsafe { fs.read_file(cluster, size, buf_pa) } {
                     Some(n) => {
                         user_elf = unsafe { core::slice::from_raw_parts(buf_pa as *const u8, n) };
+                        unsafe { USER_ELF_SIZE = n; }
                         println!("Loaded {} bytes from disk", n);
                     }
                     None => println!("read_file failed, using include_bytes"),
@@ -161,9 +162,7 @@ pub extern "C" fn kmain() -> ! {
 
     sched::init(boot_as);
     unsafe {
-        sched::spawn_el0("uart",    2, 0x40400000, 0x40700000, user_elf);
-        sched::spawn_el0("client1", 2, 0x40400000, 0x40700000, user_elf);
-        sched::spawn_el0("client2", 2, 0x40400000, 0x40700000, user_elf);
+        sched::spawn_el0("init", 2, 0x40400000, 0x40700000, user_elf);
     }
 
     timer::start();
