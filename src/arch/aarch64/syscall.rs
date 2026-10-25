@@ -27,6 +27,8 @@ pub const SYS_CONNECT:  u64 = sys_num::CONNECT;
 pub const SYS_TCP_SEND: u64 = sys_num::TCP_SEND;
 pub const SYS_TCP_RECV: u64 = sys_num::TCP_RECV;
 pub const SYS_SPAWN: u64 = sys_num::SPAWN;
+pub const SYS_KILL: u64 = sys_num::KILL;
+pub const SYS_WAIT: u64 = sys_num::WAIT;
 
 /// Отдать CPU добровольно.
 #[allow(dead_code)]

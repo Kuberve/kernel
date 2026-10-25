@@ -21,6 +21,8 @@ mod ipc;
 
 mod network;
 
+mod version;
+
 static USER_ELF: &[u8] =
     include_bytes!("../../user/target/aarch64-unknown-none/release/user");
 
@@ -59,7 +61,7 @@ pub extern "C" fn kmain() -> ! {
         asm!("isb");
     }
 
-    println!("Kuberve booting...");
+    println!("{} booting...", crate::version::OS_VERSION);
     println!("  CurrentEL = EL{}", read_el());
 
     vectors::init();
@@ -201,7 +203,7 @@ pub extern "C" fn kmain() -> ! {
             gfx::console::init();
 
             // 4. Нарисовать заголовок
-            gfx::text::draw_string_wrap(10, 10, "Kuberve Console v0.10.7", 0x0000FF00, Some(0x00101010));
+            gfx::text::draw_string_wrap(10, 10, crate::version::CONSOLE_TITLE, 0x0000FF00, Some(0x00101010));
             gfx::text::draw_string_wrap(10, 30, "", 0x00A0A0A0, Some(0x00101010));
             gfx::console::console().cursor_y = 30;
             gfx::console::console().cursor_x = 10;
@@ -224,7 +226,7 @@ pub extern "C" fn kmain() -> ! {
             wm::init();
             // НЕпересекающиеся окна (x: 50-270 и 350-590)
             wm::add_window(50,  200, 220, 140, "About", &[
-                "Kuberve v0.10.7",
+                "Kuberve v0.14.3",
                 "aarch64 OS with GUI",
                 "click title to drag",
                 "click X to close",

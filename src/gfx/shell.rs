@@ -116,7 +116,7 @@ unsafe fn cmd_help() {
 
 unsafe fn cmd_clear() {
     console::init();
-    puts(b"Kuberve Console v0.10.6\n");
+    puts(crate::version::CONSOLE_TITLE.as_bytes());
     puts(b"\n");
 }
 
@@ -183,7 +183,8 @@ unsafe fn cmd_uptime() {
 }
 
 unsafe fn cmd_info() {
-    puts(b"Kuberve v0.10.6\n");
+    puts(crate::version::OS_VERSION.as_bytes());
+    puts(b"\n");
     puts(b"  arch:  aarch64 (ARMv8-A)\n");
     puts(b"  sched: round-robin + priority + aging\n");
     puts(b"  mmu:   4-level page tables\n");
@@ -267,14 +268,14 @@ unsafe fn cmd_larpfetch() {
 
     // === Info panel ===
     let mut y = 40u32;
-    text::draw_string(400, y, "user@kuberve", yellow, None);
+    text::draw_string(200, y, "user@kuberve", yellow, None);
     y += 18;
-    text::draw_string(400, y, "-------------", yellow, None);
+    text::draw_string(200, y, "-------------", yellow, None);
     y += 20;
 
-    draw_kv(400, y, "OS:      ", "Kuberve v0.10.6", green, white);
+    draw_kv(200, y, "OS:      ", crate::version::OS_VERSION, green, white);
     y += 18;
-    draw_kv(400, y, "Kernel:  ", "kuberve-0.1 aarch64", green, white);
+    draw_kv(200, y, "Kernel:  ", crate::version::KERNEL_NAME, green, white);
     y += 18;
 
     // Uptime
@@ -284,12 +285,12 @@ unsafe fn cmd_larpfetch() {
     let n = fmt_u64(secs, &mut up_buf);
     up_buf[n] = b's';
     let up_s = core::str::from_utf8(&up_buf[..n+1]).unwrap_or("?");
-    draw_kv(400, y, "Uptime:  ", up_s, green, white);
+    draw_kv(200, y, "Uptime:  ", up_s, green, white);
     y += 18;
 
-    draw_kv(400, y, "Shell:   ", "kvsh", green, white);
+    draw_kv(200, y, "Shell:   ", "kvsh", green, white);
     y += 18;
-    draw_kv(400, y, "Res:     ", "640x480", green, white);
+    draw_kv(200, y, "Res:     ", "640x480", green, white);
     y += 18;
 
     // Memory
@@ -306,7 +307,7 @@ unsafe fn cmd_larpfetch() {
     for &b in &m2[..n2] { mem_buf[p] = b; p += 1; }
     for &b in b"MB" { mem_buf[p] = b; p += 1; }
     let mem_s = core::str::from_utf8(&mem_buf[..p]).unwrap_or("?");
-    draw_kv(400, y, "Memory:  ", mem_s, green, white);
+    draw_kv(200, y, "Memory:  ", mem_s, green, white);
     y += 18;
 
     // IP
@@ -314,7 +315,7 @@ unsafe fn cmd_larpfetch() {
     let mut ip_buf = [0u8; 16];
     let n = fmt_ip(ip, &mut ip_buf);
     let ip_s = core::str::from_utf8(&ip_buf[..n]).unwrap_or("?");
-    draw_kv(400, y, "IP:      ", ip_s, green, white);
+    draw_kv(200, y, "IP:      ", ip_s, green, white);
     y += 18;
 
     // Disk
@@ -327,7 +328,7 @@ unsafe fn cmd_larpfetch() {
         for &b in &d1[..n1] { disk_buf[p] = b; p += 1; }
         for &b in b" MB FAT32" { disk_buf[p] = b; p += 1; }
         let disk_s = core::str::from_utf8(&disk_buf[..p]).unwrap_or("?");
-        draw_kv(400, y, "Disk:    ", disk_s, green, white);
+        draw_kv(200, y, "Disk:    ", disk_s, green, white);
     }
     y += 24;
 
@@ -342,7 +343,7 @@ unsafe fn cmd_larpfetch() {
         0x00FFFF00u32,  // cyan
         0x00FFFFFFu32,  // white
     ];
-    let mut px = 400u32;
+    let mut px = 200u32;
     for &color in palette.iter() {
         text::draw_string(px, y, "  ", color, Some(color));
         px += 18;   // 16px block + 2px gap
