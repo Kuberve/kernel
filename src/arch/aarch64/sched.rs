@@ -295,7 +295,10 @@ pub unsafe fn sleep(ticks: u64) {
     loop {
         asm!("msr daifclr, #2");
         asm!("wfe");
-        if THREADS[me].state != State::Sleeping { return; }
+        if THREADS[me].state != State::Sleeping {
+            asm!("msr daifset, #2");
+            return;
+        }
     }
 }
 
@@ -434,6 +437,7 @@ pub unsafe fn block_on_ipc() {
         asm!("msr daifclr, #2");
         asm!("wfe");
         if THREADS[CURRENT].state != State::Blocked {
+            asm!("msr daifset, #2");
             return;
         }
     }
@@ -476,6 +480,7 @@ pub unsafe fn ipc_send_blocking(target: usize, msg: Message) -> bool {
             asm!("wfe");
             if THREADS[CURRENT].state != State::Blocked { break; }
         }
+        asm!("msr daifset, #2");
         THREADS[CURRENT].blocked_on_send = usize::MAX;
         // target мог умереть, пока мы ждали
         if THREADS[target].state == State::Dead { return false; }

@@ -426,10 +426,12 @@ impl Fat32 {
             }
         }
 
+        static mut FIND_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let buf_pa = &raw mut FIND_BUF as *mut NvmeBuf as u64;
+
         let mut cluster = dir_cluster;
         while cluster >= 2 && cluster < 0x0FFFFFF8 {
-            let buf_pa = phys::alloc_page()?;
-            if !self.read_cluster(cluster, buf_pa as u64) {
+            if !self.read_cluster(cluster, buf_pa) {
                 return None;
             }
             let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
@@ -462,6 +464,49 @@ impl Fat32 {
             cluster = self.next_cluster(cluster);
         }
         None
+    }
+
+    /// Найти entry по абсолютному пути с проходом по вложенным директориям.
+    /// `/system/bin/init` → разделяет на `system`, `bin`, `init`.
+    /// Для всех компонентов кроме последнего — должны быть директориями.
+    /// Возвращает (first_cluster, size, is_dir) — то же, что find_entry.
+    ///
+    /// Ограничения:
+    ///   - абсолютный путь (начинается с `/`)
+    ///   - до 16 компонентов
+    ///   - FAT32 8.3 имена (нормализация в UPPER, как в find_entry)
+    pub unsafe fn find_entry_by_path(&self, path: &str) -> Option<(u32, u32, bool)> {
+        if !path.starts_with('/') {
+            return None;
+        }
+
+        // Разбить на компоненты, отбросить пустые (двойные слеши, trailing)
+        let mut components: [&str; 16] = [""; 16];
+        let mut n = 0usize;
+        for part in path[1..].split('/') {
+            if part.is_empty() { continue; }
+            if n >= 16 { return None; }
+            components[n] = part;
+            n += 1;
+        }
+        if n == 0 {
+            return None;   // path = "/" или "//"
+        }
+
+        // Все компоненты кроме последнего — директории
+        let mut current_dir = self.root_cluster;
+        for i in 0..(n - 1) {
+            match self.find_entry(current_dir, components[i]) {
+                Some((cluster, _size, is_dir)) => {
+                    if !is_dir { return None; }
+                    current_dir = cluster;
+                }
+                None => return None,
+            }
+        }
+
+        // Последний компонент — файл или директория, как есть
+        self.find_entry(current_dir, components[n - 1])
     }
 
     /// Прочитать файл целиком в буфер `out_pa` (должен быть >= size байт).

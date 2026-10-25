@@ -48,8 +48,8 @@ fn read_vbar() -> u64 {
     v
 }
 
-pub static mut USER_ELF_BUF: [u8; 131072] = [0; 131072];
-pub static mut USER_ELF_SIZE: usize = 0;
+pub static mut SERVICE_ELF_BUF: [u8; 131072] = [0; 131072];
+pub static mut SERVICE_ELF_SIZE: usize = 0;
 
 #[no_mangle]
 pub extern "C" fn kmain() -> ! {
@@ -144,19 +144,23 @@ pub extern "C" fn kmain() -> ! {
     let mut user_elf: &[u8] = USER_ELF;
     {
         let fs = fs::fat32::get().unwrap();
-        if let Some((cluster, size, is_dir)) = unsafe { fs.find_entry(fs.root_cluster, "USER.ELF") } {
+        if let Some((cluster, size, is_dir)) = unsafe { fs.find_entry_by_path("/system/bin/init") } {
             if !is_dir && size as usize <= 131072 {
-                println!("Loading user.elf from disk: {} bytes", size);
-                let buf_pa = core::ptr::addr_of_mut!(USER_ELF_BUF) as u64;
+                println!("Loading /system/bin/init: {} bytes", size);
+                let buf_pa = core::ptr::addr_of_mut!(SERVICE_ELF_BUF) as u64;
                 match unsafe { fs.read_file(cluster, size, buf_pa) } {
                     Some(n) => {
                         user_elf = unsafe { core::slice::from_raw_parts(buf_pa as *const u8, n) };
-                        unsafe { USER_ELF_SIZE = n; }
-                        println!("Loaded {} bytes from disk", n);
+                        unsafe { SERVICE_ELF_SIZE = n; }
+                        println!("Loaded {} bytes", n);
                     }
                     None => println!("read_file failed, using include_bytes"),
                 }
+            } else {
+                println!("/system/bin/init missing or too big, using include_bytes");
             }
+        } else {
+            println!("/system/bin/init not found, using include_bytes");
         }
     }
 

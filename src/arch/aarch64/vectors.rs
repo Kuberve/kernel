@@ -114,7 +114,6 @@ global_asm!(
     // "  ldp q2, q3, [sp], #32",
     // "  ldp q0, q1, [sp], #32",
 
-    "  msr daifclr, #2",
     "  eret",
 
     "fiq_handler:",
@@ -169,7 +168,6 @@ global_asm!(
     "  ldp x2, x3, [sp], #16",
     "  ldp x0, x1, [sp], #16",
 
-    "  msr daifclr, #2",
     "  eret",
 );
 
@@ -464,26 +462,52 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             old_sp
         }
         syscall::SYS_SPAWN => {
-            // path (a0, a1) игнорируем для MVP — всегда спавним USER.ELF
-            // из pre-loaded USER_ELF_BUF (identity во всех AS через l2[1]).
+            let path_ptr = a0 as *const u8;
+            let path_len = a1 as usize;
+            if path_len == 0 || path_len > 256 {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let path_slice = core::slice::from_raw_parts(path_ptr, path_len);
+            let path = match core::str::from_utf8(path_slice) {
+                Ok(s) => s,
+                Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
+            };
             let priority = a2 as u8;
 
-            let size = unsafe { crate::USER_ELF_SIZE };
-            if size == 0 || size > 131072 {
-                // USER.ELF не был загружен с диска (fallback include_bytes,
-                // который мы не обрабатываем в handler'е).
+            let fs = match crate::fs::fat32::get() {
+                Some(f) => f,
+                None => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+
+            let (cluster, size, is_dir) = match fs.find_entry_by_path(path) {
+                Some(v) => v,
+                None => {
+                    crate::println!("[SYS_SPAWN] path not found: {}", path);
+                    ctx.x0 = u64::MAX;
+                    return old_sp;
+                }
+            };
+            if is_dir || size as usize > 131072 {
+                crate::println!("[SYS_SPAWN] path is dir or too big: {}", path);
                 ctx.x0 = u64::MAX;
                 return old_sp;
             }
 
-            let elf_ptr = unsafe { core::ptr::addr_of!(crate::USER_ELF_BUF) as *const u8 };
-            let elf_bytes = unsafe { core::slice::from_raw_parts(elf_ptr, size) };
-
-            let result = unsafe { sched::spawn_el0_from_buf("child", priority, elf_bytes) };
-            ctx.x0 = match result {
-                Some(id) => id as u64,
-                None => u64::MAX,
+            let buf_pa = unsafe { core::ptr::addr_of_mut!(crate::SERVICE_ELF_BUF) as u64 };
+            let n = match fs.read_file(cluster, size, buf_pa) {
+                Some(n) => n,
+                None => {
+                    crate::println!("[SYS_SPAWN] read_file failed: {}", path);
+                    ctx.x0 = u64::MAX;
+                    return old_sp;
+                }
             };
+            unsafe { crate::SERVICE_ELF_SIZE = n; }
+
+            let elf_bytes = unsafe { core::slice::from_raw_parts(buf_pa as *const u8, n) };
+            let result = unsafe { sched::spawn_el0_from_buf("child", priority, elf_bytes) };
+            ctx.x0 = match result { Some(id) => id as u64, None => u64::MAX };
             old_sp
         }
         syscall::SYS_EXIT => sched::exit(),
@@ -562,7 +586,7 @@ pub unsafe extern "C" fn rust_irq_handler(old_sp: u64) -> u64 {
                 tag: 2,   // 2 = IRQ
                 data: [33, 0, 0, 0, 0, 0, 0],
             };
-            unsafe { sched::ipc_send(2, msg); }
+            unsafe { sched::ipc_send(1, msg); }
             return old_sp;
         }
         _ => {}
