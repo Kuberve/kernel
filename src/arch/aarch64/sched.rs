@@ -198,7 +198,10 @@ pub unsafe fn spawn_el0_from_buf(
     elf_bytes: &[u8],
 ) -> Option<usize> {
     let id_before = COUNT;
-    let usp = 0x40700000u64 + (id_before as u64) * 0x80000;
+    // Stack region: 0x40600000..0x40800000 (l2[3]), heap: 0x40800000 (l2[4]).
+    // 128 KB per thread, рост вниз от 0x407E0000.
+    // id=0 → 0x407E0000, id=1 → 0x407C0000, ..., id=15 → 0x40600000.
+    let usp = 0x40800000u64 - ((id_before as u64) + 1) * 0x20000;
     spawn_el0(name, priority, 0x40400000, usp, elf_bytes);
     if COUNT > id_before { Some(id_before) } else { None }
 }
