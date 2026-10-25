@@ -586,6 +586,70 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             ctx.x0 = if ok { 0 } else { u64::MAX };
             old_sp
         }
+        syscall::SYS_UNLINK => {
+            let path_ptr = a0 as *const u8;
+            let path_len = a1 as usize;
+            if path_len == 0 || path_len > 256 {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let path_slice = core::slice::from_raw_parts(path_ptr, path_len);
+            let path = match core::str::from_utf8(path_slice) {
+                Ok(s) => s,
+                Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let fs = match crate::fs::fat32::get() {
+                Some(f) => f,
+                None => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let ok = fs.unlink_by_path(path);
+            ctx.x0 = if ok { 0 } else { u64::MAX };
+            old_sp
+        }
+        syscall::SYS_RMDIR => {
+            let path_ptr = a0 as *const u8;
+            let path_len = a1 as usize;
+            if path_len == 0 || path_len > 256 {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let path_slice = core::slice::from_raw_parts(path_ptr, path_len);
+            let path = match core::str::from_utf8(path_slice) {
+                Ok(s) => s,
+                Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let fs = match crate::fs::fat32::get() {
+                Some(f) => f,
+                None => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let ok = fs.rmdir_by_path(path);
+            ctx.x0 = if ok { 0 } else { u64::MAX };
+            old_sp
+        }
+        syscall::SYS_READDIR => {
+            let a3 = ctx.x3;
+            let path_ptr = a0 as *const u8;
+            let path_len = a1 as usize;
+            let buf_ptr = a2 as *mut kuberve_abi::DirEntry;
+            let max_entries = a3 as usize;
+
+            if path_len == 0 || path_len > 256 || buf_ptr.is_null() || max_entries == 0 {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let path_slice = core::slice::from_raw_parts(path_ptr, path_len);
+            let path = match core::str::from_utf8(path_slice) {
+                Ok(s) => s,
+                Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let fs = match crate::fs::fat32::get() {
+                Some(f) => f,
+                None => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let n = fs.readdir_into(path, buf_ptr as *mut u8, max_entries);
+            ctx.x0 = n as u64;
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(a0),
         _ => {
             crate::println!("unknown syscall {}", num);

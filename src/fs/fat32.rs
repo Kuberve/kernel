@@ -649,6 +649,262 @@ impl Fat32 {
         self.create_file(parent_cluster, name)
     }
 
+    /// Удалить файл по абсолютному пути. Освобождает FAT chain.
+    /// Возвращает true при успехе.
+    pub unsafe fn unlink_by_path(&self, path: &str) -> bool {
+        if !path.starts_with('/') { return false; }
+        let path = path.trim_end_matches('/');
+        if path.is_empty() || path == "/" { return false; }
+        let (parent_path, name) = match path.rfind('/') {
+            Some(idx) => {
+                let parent = if idx == 0 { "/" } else { &path[..idx] };
+                (parent, &path[idx + 1..])
+            }
+            None => return false,
+        };
+        if name.is_empty() { return false; }
+        let parent_cluster = if parent_path == "/" {
+            self.root_cluster
+        } else {
+            match self.find_entry_by_path(parent_path) {
+                Some((c, _, true)) => c,
+                _ => return false,
+            }
+        };
+        self.remove_entry_from_dir(parent_cluster, name, false)
+    }
+
+    /// Удалить директорию по абсолютному пути. Директория должна быть пустой
+    /// (только `.` и `..`). Освобождает FAT chain.
+    pub unsafe fn rmdir_by_path(&self, path: &str) -> bool {
+        if !path.starts_with('/') { return false; }
+        let path = path.trim_end_matches('/');
+        if path.is_empty() || path == "/" { return false; }
+        let (parent_path, name) = match path.rfind('/') {
+            Some(idx) => {
+                let parent = if idx == 0 { "/" } else { &path[..idx] };
+                (parent, &path[idx + 1..])
+            }
+            None => return false,
+        };
+        if name.is_empty() { return false; }
+        let parent_cluster = if parent_path == "/" {
+            self.root_cluster
+        } else {
+            match self.find_entry_by_path(parent_path) {
+                Some((c, _, true)) => c,
+                _ => return false,
+            }
+        };
+        self.remove_entry_from_dir(parent_cluster, name, true)
+    }
+
+    /// Общий helper: найти entry в `dir_cluster` по имени (8.3 normalized),
+    /// проверить тип (dir/file), при need_dir проверить пустоту,
+    /// пометить 0xE5, освободить FAT chain.
+    unsafe fn remove_entry_from_dir(&self, dir_cluster: u32, name: &str, want_dir: bool) -> bool {
+        // Нормализация в 11 байт 8.3
+        let mut target = [b' '; 11];
+        let bytes = name.as_bytes();
+        let mut i = 0; let mut j = 0;
+        while i < bytes.len() && j < 8 {
+            let c = bytes[i];
+            if c == b'.' { break; }
+            target[j] = if c >= b'a' && c <= b'z' { c - 32 } else { c };
+            i += 1; j += 1;
+        }
+        while i < bytes.len() && bytes[i] != b'.' { i += 1; }
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            let mut k = 8;
+            while i < bytes.len() && k < 11 {
+                let c = bytes[i];
+                target[k] = if c >= b'a' && c <= b'z' { c - 32 } else { c };
+                i += 1; k += 1;
+            }
+        }
+
+        static mut UNLINK_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let buf_pa = &raw mut UNLINK_BUF as *mut NvmeBuf as u64;
+        let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+
+        let mut cluster = dir_cluster;
+        while cluster >= 2 && cluster < 0x0FFFFFF8 {
+            if !self.read_cluster(cluster, buf_pa) { return false; }
+            let entries = cluster_size / 32;
+            let buf = core::slice::from_raw_parts(buf_pa as *const u8, cluster_size);
+
+            for e_idx in 0..entries {
+                let off = e_idx * 32;
+                let first = buf[off];
+                if first == 0x00 { return false; }
+                if first == 0xE5 { continue; }
+                let attr = buf[off + 11];
+                if attr == 0x0F { continue; }
+                if attr & 0x08 != 0 { continue; }
+
+                let mut matched = true;
+                for k in 0..11 {
+                    if buf[off + k] != target[k] { matched = false; break; }
+                }
+                if !matched { continue; }
+
+                let is_dir = (attr & 0x10) != 0;
+                if want_dir && !is_dir { return false; }
+                if !want_dir && is_dir { return false; }
+
+                let hi = read_u16(buf, off + 20) as u32;
+                let lo = read_u16(buf, off + 26) as u32;
+                let first_cluster = (hi << 16) | lo;
+
+                if want_dir && !self.is_dir_empty(first_cluster) { return false; }
+
+                // Mark entry deleted
+                let buf_mut = core::slice::from_raw_parts_mut(buf_pa as *mut u8, cluster_size);
+                buf_mut[off] = 0xE5;
+
+                if !self.write_cluster(cluster, buf_pa) { return false; }
+
+                // Free FAT chain (read next BEFORE zeroing entry)
+                let mut c = first_cluster;
+                while c >= 2 && c < 0x0FFFFFF8 {
+                    let next = self.next_cluster(c);
+                    self.write_fat_entry(c, 0);
+                    c = next;
+                }
+
+                return true;
+            }
+            cluster = self.next_cluster(cluster);
+        }
+        false
+    }
+
+    /// Директория пуста? true если только `.` и `..` (или вообще нет entries).
+    unsafe fn is_dir_empty(&self, dir_cluster: u32) -> bool {
+        if dir_cluster < 2 || dir_cluster >= 0x0FFFFFF8 { return false; }
+
+        static mut EMPTY_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let buf_pa = &raw mut EMPTY_BUF as *mut NvmeBuf as u64;
+        let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+
+        let mut cluster = dir_cluster;
+        while cluster >= 2 && cluster < 0x0FFFFFF8 {
+            if !self.read_cluster(cluster, buf_pa) { return false; }
+            let entries = cluster_size / 32;
+            let buf = core::slice::from_raw_parts(buf_pa as *const u8, cluster_size);
+
+            for e_idx in 0..entries {
+                let off = e_idx * 32;
+                let first = buf[off];
+                if first == 0x00 { return true; }   // end of dir marker
+                if first == 0xE5 { continue; }
+                let attr = buf[off + 11];
+                if attr == 0x0F { continue; }
+                if attr & 0x08 != 0 { continue; }
+
+                // Skip `.` and `..`
+                if first == b'.' {
+                    let second = buf[off + 1];
+                    if second == b' ' || second == b'.' { continue; }
+                }
+
+                return false;   // нашли real file/dir
+            }
+            cluster = self.next_cluster(cluster);
+        }
+        true
+    }
+
+    /// Прочитать содержимое директории по абсолютному пути.
+    /// Записывает до `max_entries` × 32 байт DirEntry в `out`.
+    /// Пропускает `.`, `..`, LFN, volume label, deleted.
+    /// Возвращает количество записанных entries (0 если директория пуста / не найдена).
+    pub unsafe fn readdir_into(&self, path: &str, out: *mut u8, max_entries: usize) -> usize {
+        if !path.starts_with('/') { return 0; }
+        if out.is_null() || max_entries == 0 { return 0; }
+        let trimmed = path.trim_end_matches('/');
+
+        let dir_cluster = if trimmed.is_empty() {
+            self.root_cluster
+        } else {
+            match self.find_entry_by_path(trimmed) {
+                Some((c, _, true)) => c,
+                _ => return 0,
+            }
+        };
+
+        static mut RD_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let buf_pa = &raw mut RD_BUF as *mut NvmeBuf as u64;
+        let cluster_size = self.bytes_per_sector as usize * self.sectors_per_cluster as usize;
+
+        let mut cluster = dir_cluster;
+        let mut written = 0usize;
+
+        while cluster >= 2 && cluster < 0x0FFFFFF8 && written < max_entries {
+            if !self.read_cluster(cluster, buf_pa) { return written; }
+            let entries = cluster_size / 32;
+            let buf = core::slice::from_raw_parts(buf_pa as *const u8, cluster_size);
+
+            for e_idx in 0..entries {
+                let off = e_idx * 32;
+                let first = buf[off];
+                if first == 0x00 { return written; }   // end of dir
+                if first == 0xE5 { continue; }         // deleted
+                let attr = buf[off + 11];
+                if attr == 0x0F { continue; }          // LFN
+                if attr & 0x08 != 0 { continue; }      // volume label
+
+                // Пропустить . и ..
+                if first == b'.' {
+                    let second = buf[off + 1];
+                    if second == b' ' || second == b'.' { continue; }
+                }
+
+                let is_dir = (attr & 0x10) != 0;
+                let hi = read_u16(buf, off + 20) as u32;
+                let lo = read_u16(buf, off + 26) as u32;
+                let file_cluster = (hi << 16) | lo;
+                let size = read_u32(buf, off + 28);
+
+                // Format 8.3 name → "NAME" или "NAME.EXT", uppercase, null-terminated
+                let mut name_buf = [0u8; 20];
+                let mut n = 0;
+                for j in 0..8 {
+                    let c = buf[off + j];
+                    if c == b' ' { break; }
+                    name_buf[n] = c; n += 1;
+                }
+                let mut has_ext = false;
+                for j in 8..11 {
+                    if buf[off + j] != b' ' { has_ext = true; break; }
+                }
+                if has_ext && n < 19 {
+                    name_buf[n] = b'.'; n += 1;
+                    for j in 8..11 {
+                        let c = buf[off + j];
+                        if c == b' ' { break; }
+                        name_buf[n] = c; n += 1;
+                    }
+                }
+
+                let entry = kuberve_abi::DirEntry {
+                    name: name_buf,
+                    is_dir: if is_dir { 1 } else { 0 },
+                    size,
+                    cluster: file_cluster,
+                };
+                let entry_ptr = (out as *mut kuberve_abi::DirEntry).add(written);
+                core::ptr::write_volatile(entry_ptr, entry);
+
+                written += 1;
+                if written >= max_entries { return written; }
+            }
+            cluster = self.next_cluster(cluster);
+        }
+        written
+    }
+
     /// Прочитать файл целиком в буфер `out_pa` (должен быть >= size байт).
     /// Возвращает реально прочитанное число байт.
     pub unsafe fn read_file(

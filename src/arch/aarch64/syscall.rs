@@ -31,6 +31,9 @@ pub const SYS_KILL: u64 = sys_num::KILL;
 pub const SYS_WAIT: u64 = sys_num::WAIT;
 pub const SYS_STAT: u64 = sys_num::STAT;
 pub const SYS_MKDIR: u64 = sys_num::MKDIR;
+pub const SYS_UNLINK: u64 = sys_num::UNLINK;
+pub const SYS_RMDIR:  u64 = sys_num::RMDIR;
+pub const SYS_READDIR: u64 = sys_num::READDIR;
 
 /// Отдать CPU добровольно.
 #[allow(dead_code)]
