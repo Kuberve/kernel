@@ -566,6 +566,26 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             }
             old_sp
         }
+        syscall::SYS_MKDIR => {
+            let path_ptr = a0 as *const u8;
+            let path_len = a1 as usize;
+            if path_len == 0 || path_len > 256 {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let path_slice = core::slice::from_raw_parts(path_ptr, path_len);
+            let path = match core::str::from_utf8(path_slice) {
+                Ok(s) => s,
+                Err(_) => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let fs = match crate::fs::fat32::get() {
+                Some(f) => f,
+                None => { ctx.x0 = u64::MAX; return old_sp; }
+            };
+            let ok = fs.create_dir_by_path(path);
+            ctx.x0 = if ok { 0 } else { u64::MAX };
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(a0),
         _ => {
             crate::println!("unknown syscall {}", num);

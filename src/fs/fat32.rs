@@ -508,6 +508,146 @@ impl Fat32 {
         // Последний компонент — файл или директория, как есть
         self.find_entry(current_dir, components[n - 1])
     }
+        
+    /// Создать директорию по абсолютному пути. Родитель должен существовать.
+    /// Новая директория инициализируется `.` и `..` (FAT32 spec).
+    /// Возвращает true при успехе, false если: path не абсолютный,
+    /// родитель не найден / не dir, имя уже занято, нет свободного места.
+    pub unsafe fn create_dir_by_path(&self, path: &str) -> bool {
+        if !path.starts_with('/') { return false; }
+        let path = path.trim_end_matches('/');
+        if path == "/" || path.is_empty() { return false; }
+
+        // Разделить на parent_path и name
+        let (parent_path, name) = match path.rfind('/') {
+            Some(idx) => {
+                let parent = if idx == 0 { "/" } else { &path[..idx] };
+                (parent, &path[idx + 1..])
+            }
+            None => return false,
+        };
+        if name.is_empty() || name.len() > 8 { return false; }   // 8.3, без ext для dir
+
+        // Родитель
+        let parent_cluster = if parent_path == "/" {
+            self.root_cluster
+        } else {
+            match self.find_entry_by_path(parent_path) {
+                Some((c, _, true)) => c,
+                _ => return false,
+            }
+        };
+
+        // Проверить что имени нет — но если уже есть директория с этим именем,
+        // это идемпотентный success (mkdir -p style). Если файл — fail.
+        if let Some((_, _, is_dir)) = self.find_entry(parent_cluster, name) {
+            return is_dir;
+        }
+
+        // Свободный слот в parent
+        let (dir_cl, _off, entry_idx) = match self.find_free_dir_entry(parent_cluster) {
+            Some(v) => v,
+            None => return false,
+        };
+
+        // Кластер для новой директории
+        let new_cluster = match self.alloc_cluster() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        // === Инициализировать new_cluster: `.` и `..` ===
+        static mut NEWDIR_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let newdir_pa = &raw mut NEWDIR_BUF as *mut NvmeBuf as u64;
+        core::ptr::write_bytes(newdir_pa as *mut u8, 0, 512);
+        let nd = core::slice::from_raw_parts_mut(newdir_pa as *mut u8, 512);
+
+        // `.` — offset 0
+        nd[0] = b'.';
+        for i in 1..11 { nd[i] = b' '; }
+        nd[11] = 0x10;   // attr = DIR
+        nd[20] = ((new_cluster >> 16) & 0xFF) as u8;
+        nd[21] = (((new_cluster >> 16) >> 8) & 0xFF) as u8;
+        nd[26] = (new_cluster & 0xFF) as u8;
+        nd[27] = ((new_cluster >> 8) & 0xFF) as u8;
+        // FileSize остаётся 0
+
+        // `..` — offset 32
+        nd[32] = b'.';
+        nd[33] = b'.';
+        for i in 34..43 { nd[i] = b' '; }
+        nd[43] = 0x10;   // attr
+        // По FAT32 spec: если parent = root, FstClus = 0. Иначе = parent cluster.
+        let parent_ref: u32 = if parent_cluster == self.root_cluster { 0 } else { parent_cluster };
+        nd[52] = ((parent_ref >> 16) & 0xFF) as u8;
+        nd[53] = (((parent_ref >> 16) >> 8) & 0xFF) as u8;
+        nd[58] = (parent_ref & 0xFF) as u8;
+        nd[59] = ((parent_ref >> 8) & 0xFF) as u8;
+
+        if !self.write_cluster(new_cluster, newdir_pa) { return false; }
+
+        // === Записать entry в parent dir ===
+        static mut PARENT_BUF: NvmeBuf = NvmeBuf([0; 4096]);
+        let parent_pa = &raw mut PARENT_BUF as *mut NvmeBuf as u64;
+        if !self.read_cluster(dir_cl, parent_pa) { return false; }
+
+        // Нормализация 8.3 (без ext)
+        let mut target = [b' '; 11];
+        let bytes = name.as_bytes();
+        for j in 0..bytes.len() {
+            if j >= 8 { return false; }
+            let c = bytes[j];
+            target[j] = if c >= b'a' && c <= b'z' { c - 32 } else { c };
+        }
+
+        let p = core::slice::from_raw_parts_mut(parent_pa as *mut u8, 512);
+        let off = entry_idx * 32;
+        for k in 0..11 { p[off + k] = target[k]; }
+        p[off + 11] = 0x10;   // attr = DIR
+        p[off + 12] = 0;
+        p[off + 13] = 0;
+        for k in 0..4 { p[off + 14 + k] = 0; }    // CrtTime/Date
+        for k in 0..2 { p[off + 18 + k] = 0; }    // LstAccDate
+        p[off + 20] = ((new_cluster >> 16) & 0xFF) as u8;
+        p[off + 21] = (((new_cluster >> 16) >> 8) & 0xFF) as u8;
+        for k in 0..4 { p[off + 22 + k] = 0; }    // WrtTime/Date
+        p[off + 26] = (new_cluster & 0xFF) as u8;
+        p[off + 27] = ((new_cluster >> 8) & 0xFF) as u8;
+        for k in 0..4 { p[off + 28 + k] = 0; }    // FileSize
+
+        if !self.write_cluster(dir_cl, parent_pa) { return false; }
+
+        true
+    }
+
+    /// Создать файл по абсолютному пути. Родитель должен существовать.
+    /// Возвращает (first_cluster, size=0).
+    /// Если файл уже есть — возвращает его entry (поведение create_file).
+    pub unsafe fn create_file_by_path(&self, path: &str) -> Option<(u32, u32)> {
+        if !path.starts_with('/') { return None; }
+        let path = path.trim_end_matches('/');
+        if path.is_empty() || path == "/" { return None; }
+
+        let (parent_path, name) = match path.rfind('/') {
+            Some(idx) => {
+                let parent = if idx == 0 { "/" } else { &path[..idx] };
+                (parent, &path[idx + 1..])
+            }
+            None => return None,
+        };
+        if name.is_empty() || name.len() > 12 { return None; }   // 8.3: 8+1+3
+
+        let parent_cluster = if parent_path == "/" {
+            self.root_cluster
+        } else {
+            match self.find_entry_by_path(parent_path) {
+                Some((c, _, true)) => c,
+                _ => return None,
+            }
+        };
+
+        self.create_file(parent_cluster, name)
+    }
 
     /// Прочитать файл целиком в буфер `out_pa` (должен быть >= size байт).
     /// Возвращает реально прочитанное число байт.

@@ -34,9 +34,7 @@ pub unsafe fn fd_open(path: &str, flags: u64) -> i64 {
         }
         None => {
             if flags & kuberve_abi::flags::O_CREAT != 0 {
-                // TODO: create_file_by_path для вложенных путей.
-                // Сейчас создаёт только в root — для init.cfg (O_RDONLY) не задействовано.
-                match fs.create_file(fs.root_cluster, path) {
+                match fs.create_file_by_path(path) {
                     Some((c, s)) => (c, s),
                     None => return -1,
                 }
