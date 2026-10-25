@@ -510,7 +510,27 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             ctx.x0 = match result { Some(id) => id as u64, None => u64::MAX };
             old_sp
         }
-        syscall::SYS_EXIT => sched::exit(),
+        syscall::SYS_KILL => {
+            let pid = a0 as usize;
+            if pid >= sched::MAX_THREADS {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let ok = sched::kill(pid);
+            ctx.x0 = if ok { 0 } else { u64::MAX };
+            old_sp
+        }
+        syscall::SYS_WAIT => {
+            let pid = a0 as usize;
+            if pid >= sched::MAX_THREADS {
+                ctx.x0 = u64::MAX;
+                return old_sp;
+            }
+            let code = sched::wait(pid);
+            ctx.x0 = code;
+            old_sp
+        }
+        syscall::SYS_EXIT => sched::exit(a0),
         _ => {
             crate::println!("unknown syscall {}", num);
             ctx.x0 = u64::MAX;

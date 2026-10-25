@@ -32,6 +32,8 @@ pub struct Thread {
     pub id: u32,
     pub name: &'static str,
     pub as_: crate::arch::aarch64::mmu::AddressSpace,
+    pub exit_code: u64,     // SYS_WAIT return value; u64::MAX = killed
+    pub waiting_on: usize,  // pid, которого ждём; usize::MAX = не ждёт
 }
 
 const EMPTY_THREAD: Thread = Thread {
@@ -46,6 +48,8 @@ const EMPTY_THREAD: Thread = Thread {
     id: 0,
     name: "",
     as_: crate::arch::aarch64::mmu::EMPTY_AS,
+    exit_code: 0,
+    waiting_on: usize::MAX,
 };
 
 static mut THREADS: [Thread; MAX_THREADS] = [EMPTY_THREAD; MAX_THREADS];
@@ -106,6 +110,8 @@ pub unsafe fn spawn(name: &'static str, priority: u8, entry: extern "C" fn() -> 
         id: id as u32,
         name,
         as_: crate::arch::aarch64::mmu::create_as(id, (id + 1) as u16),
+        exit_code: 0,
+        waiting_on: usize::MAX,
     };
 
     println!("spawned '{}' id={} sp={:#x}", name, id, sp);
@@ -175,6 +181,8 @@ pub unsafe fn spawn_el0(
         id: id as u32,
         name,
         as_,
+        exit_code: 0,
+        waiting_on: usize::MAX,
     };
 
     println!("spawned '{}' (EL0) id={} ksp={:#x} usp={:#x}", name, id, sp, usp);
@@ -303,15 +311,22 @@ pub unsafe fn sleep(ticks: u64) {
 }
 
 /// Завершить текущий поток.
-pub fn exit() -> ! {
+pub fn exit(code: u64) -> ! {
     unsafe {
         if CURRENT != IDLE {
             let me = CURRENT;
             THREADS[me].state = State::Dead;
+            THREADS[me].exit_code = code;
             QUEUES[me] = EMPTY_QUEUE;
             // разбудить всех, кто ждал отправки к нам — они увидят Dead и вернут false
             for i in 0..COUNT {
                 if THREADS[i].state == State::Blocked && THREADS[i].blocked_on_send == me {
+                    THREADS[i].state = State::Ready;
+                }
+            }
+            // разбудить всех, кто ждёт нашего завершения через sys_wait
+            for i in 0..COUNT {
+                if THREADS[i].state == State::Blocked && THREADS[i].waiting_on == me {
                     THREADS[i].state = State::Ready;
                 }
             }
@@ -524,4 +539,60 @@ pub unsafe fn thread_brk(pid: usize) -> u64 {
 pub unsafe fn set_thread_brk(pid: usize, new: u64) {
     if pid >= MAX_THREADS { return; }
     THREADS[pid].brk = new;
+}
+
+/// Принудительно завершить поток pid.
+/// Возвращает true если убит, false если pid невалиден / Dead / CURRENT / IDLE.
+pub unsafe fn kill(pid: usize) -> bool {
+    if pid >= COUNT { return false; }
+    if pid == IDLE { return false; }
+    if pid == CURRENT { return false; }   // self-kill не поддерживаем
+    if THREADS[pid].state == State::Dead { return false; }
+
+    THREADS[pid].state = State::Dead;
+    THREADS[pid].exit_code = u64::MAX;   // -1 = killed (не exit)
+    QUEUES[pid] = EMPTY_QUEUE;
+
+    // разбудить blocked senders
+    for i in 0..COUNT {
+        if THREADS[i].state == State::Blocked && THREADS[i].blocked_on_send == pid {
+            THREADS[i].state = State::Ready;
+        }
+    }
+    // разбудить всех ждущих завершения pid
+    for i in 0..COUNT {
+        if THREADS[i].state == State::Blocked && THREADS[i].waiting_on == pid {
+            THREADS[i].state = State::Ready;
+        }
+    }
+    true
+}
+
+/// Заблокироваться до завершения потока target_pid. Возвращает exit_code.
+/// u64::MAX — ошибка (pid невалиден, self-wait, CURRENT == IDLE).
+pub unsafe fn wait(target_pid: usize) -> u64 {
+    if target_pid >= COUNT { return u64::MAX; }
+    if target_pid == IDLE { return u64::MAX; }
+    if target_pid == CURRENT { return u64::MAX; }
+    if CURRENT == IDLE { return u64::MAX; }
+
+    if THREADS[target_pid].state == State::Dead {
+        return THREADS[target_pid].exit_code;
+    }
+
+    let me = CURRENT;
+    THREADS[me].waiting_on = target_pid;
+    THREADS[me].state = State::Blocked;
+
+    loop {
+        asm!("msr daifclr, #2");
+        asm!("wfe");
+        if THREADS[me].state != State::Blocked {
+            break;
+        }
+    }
+    asm!("msr daifset, #2");   // перемаскировать перед возвратом в sync_handler
+
+    THREADS[me].waiting_on = usize::MAX;
+    THREADS[target_pid].exit_code
 }
