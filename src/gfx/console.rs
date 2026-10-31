@@ -1,124 +1,154 @@
+use crate::gfx::compositor::{back_canvas, mark_dirty, FB_W, FB_H};
 use crate::gfx::text;
-use crate::drivers::virtio::gpu;
 
-const FB_ADDR: u64 = 0x48000000;
-const FB_WIDTH: u32 = 640;
-const FB_HEIGHT: u32 = 480;
-const BG_COLOR: u32 = 0x00101010;
-const FG_COLOR: u32 = 0x00E0E0E0;
+pub const BG: u32 = 0x00101010;
+pub const FG: u32 = 0x00E0E0E0;
 
 pub struct Console {
     pub cursor_x: u32,
     pub cursor_y: u32,
-    pub line_height: u32,
-    pub char_width: u32,
 }
 
-pub static mut CONSOLE: Console = Console {
-    cursor_x: 10,
-    cursor_y: 10,
-    line_height: 16,
-    char_width: 8,
-};
+pub static mut CONSOLE: Console = Console { cursor_x: 10, cursor_y: 10 };
 
-pub fn console() -> &'static mut Console {
-    unsafe { &mut CONSOLE }
+static mut BLINK_VISIBLE: bool = true;
+static mut BLINK_LAST: u64 = 0;
+const BLINK_INTERVAL: u64 = 50;   // 0.5s при TICK_HZ=100
+
+pub fn console() -> &'static mut Console { unsafe { &mut CONSOLE } }
+
+const LINE_H: u32 = 16;
+const CHAR_W: u32 = 8;
+const LEFT: u32 = 10;
+
+unsafe fn blink_draw(on: bool) {
+    let mut cv = back_canvas();
+    let x = CONSOLE.cursor_x;
+    let y = CONSOLE.cursor_y + 16;   // под символом
+    let color = if on { FG } else { BG };
+    for dx in 0..8 {
+        cv.put_pixel(x + dx, y, color);
+        cv.put_pixel(x + dx, y + 1, color);
+    }
+    mark_dirty(x, y, 8, 2);
 }
 
-// Dirty region
-static mut DIRTY_X0: u32 = u32::MAX;
-static mut DIRTY_Y0: u32 = u32::MAX;
-static mut DIRTY_X1: u32 = 0;
-static mut DIRTY_Y1: u32 = 0;
-static mut HAS_DIRTY: bool = false;
-
-unsafe fn mark_dirty(x: u32, y: u32) {
-    if x < DIRTY_X0 { DIRTY_X0 = x; }
-    if y < DIRTY_Y0 { DIRTY_Y0 = y; }
-    let rx = x + 8;
-    let ry = y + 16;
-    if rx > DIRTY_X1 { DIRTY_X1 = rx; }
-    if ry > DIRTY_Y1 { DIRTY_Y1 = ry; }
-    HAS_DIRTY = true;
+pub unsafe fn blink() {
+    let now = crate::arch::aarch64::timer::tick_count();
+    if now.wrapping_sub(BLINK_LAST) < BLINK_INTERVAL { return; }
+    BLINK_LAST = now;
+    if BLINK_VISIBLE {
+        blink_draw(false);
+        BLINK_VISIBLE = false;
+    } else {
+        blink_draw(true);
+        BLINK_VISIBLE = true;
+    }
 }
 
 pub unsafe fn init() {
-    let total = (FB_WIDTH * FB_HEIGHT) as usize;
-    let ptr = FB_ADDR as *mut u32;
-    for i in 0..total {
-        core::ptr::write_volatile(ptr.add(i), BG_COLOR);
-    }
-    CONSOLE.cursor_x = 10;
+    let mut cv = back_canvas();
+    cv.fill_rect(0, 0, FB_W, FB_H, BG);
+    mark_dirty(0, 0, FB_W, FB_H);
+    CONSOLE.cursor_x = LEFT;
     CONSOLE.cursor_y = 10;
+    BLINK_VISIBLE = false;
+    BLINK_LAST = 0;
 }
 
 pub unsafe fn putchar(c: u8) {
-    let draw_x = CONSOLE.cursor_x;
-    let draw_y = CONSOLE.cursor_y;
+    crate::gfx::cursor::hide();
+
+    if BLINK_VISIBLE { blink_draw(false); }
 
     if c == b'\n' {
-        CONSOLE.cursor_x = 10;
-        CONSOLE.cursor_y += CONSOLE.line_height;
-    } else if c == b'\r' {
-        CONSOLE.cursor_x = 10;
-    } else {
-        text::draw_char(draw_x, draw_y, c, FG_COLOR, Some(BG_COLOR));
-        CONSOLE.cursor_x += CONSOLE.char_width;
-        if CONSOLE.cursor_x + CONSOLE.char_width > FB_WIDTH {
-            CONSOLE.cursor_x = 10;
-            CONSOLE.cursor_y += CONSOLE.line_height;
+        CONSOLE.cursor_x = LEFT;
+        CONSOLE.cursor_y += LINE_H;
+        while CONSOLE.cursor_y + LINE_H > FB_H {
+            scroll();
         }
-        mark_dirty(draw_x, draw_y);
+    } else if c == b'\r' {
+        CONSOLE.cursor_x = LEFT;
+    } else {
+        if CONSOLE.cursor_x + CHAR_W > FB_W {
+            CONSOLE.cursor_x = LEFT;
+            CONSOLE.cursor_y += LINE_H;
+        }
+        while CONSOLE.cursor_y + LINE_H > FB_H {
+            scroll();
+        }
+
+        let dx = CONSOLE.cursor_x;
+        let dy = CONSOLE.cursor_y;
+        let mut cv = back_canvas();
+        text::draw_char(&mut cv, dx, dy, c, FG, Some(BG));
+        CONSOLE.cursor_x += CHAR_W;
+        mark_dirty(dx, dy, CHAR_W, LINE_H);
     }
 
-    // Scroll если нужно
-    while CONSOLE.cursor_y + CONSOLE.line_height > FB_HEIGHT {
-        scroll();
-    }
+    blink_draw(true);
+    BLINK_VISIBLE = true;
+    BLINK_LAST = crate::arch::aarch64::timer::tick_count();
+
+    crate::gfx::cursor::show();
 }
 
 pub unsafe fn backspace() {
-    if CONSOLE.cursor_x > 10 {
-        CONSOLE.cursor_x -= CONSOLE.char_width;
-        text::draw_char(CONSOLE.cursor_x, CONSOLE.cursor_y, b' ', FG_COLOR, Some(BG_COLOR));
-        mark_dirty(CONSOLE.cursor_x, CONSOLE.cursor_y);
-    }
-}
+    crate::gfx::cursor::hide();
 
-pub unsafe fn flush(gpu: &mut crate::drivers::virtio::gpu::VirtioGpu) {
-    crate::drivers::virtio::gpu::flush(gpu, FB_WIDTH, FB_HEIGHT);
+    if BLINK_VISIBLE { blink_draw(false); }
+
+    if CONSOLE.cursor_x > LEFT {
+        CONSOLE.cursor_x -= CHAR_W;
+        let mut cv = back_canvas();
+        text::draw_char(&mut cv, CONSOLE.cursor_x, CONSOLE.cursor_y, b' ', FG, Some(BG));
+        mark_dirty(CONSOLE.cursor_x, CONSOLE.cursor_y, CHAR_W, LINE_H);
+    }
+
+    blink_draw(true);
+    BLINK_VISIBLE = true;
+    BLINK_LAST = crate::arch::aarch64::timer::tick_count();
+
+    crate::gfx::cursor::show();
 }
 
 unsafe fn scroll() {
-    // Скрыть курсор (восстановить SAVED_BG под ним — крестик не попадёт в copy)
+    core::arch::asm!("msr daifset, #2");
+
     crate::gfx::cursor::hide();
 
-    let ptr = FB_ADDR as *mut u32;
-    let line_h = CONSOLE.line_height as usize;
-    let pixels_per_row = FB_WIDTH as usize;
-    let rows = FB_HEIGHT as usize;
+    if BLINK_VISIBLE { blink_draw(false); }
 
-    if line_h >= rows { return; }
+    let ptr = 0x48200000u64 as *mut u32;
+    let pixels = (FB_W * FB_H) as usize;
+    let line_pixels = (FB_W * LINE_H) as usize;
+    let tail_start = pixels - line_pixels;
 
-    let src = ptr.add(line_h * pixels_per_row);
-    let n = (rows - line_h) * pixels_per_row;
-    core::ptr::copy(src, ptr, n);
+    let ptr64 = ptr as *mut u64;
+    let src_start = (line_pixels / 2) as usize;
+    let n64 = (pixels - line_pixels) / 2;
 
-    let clear_start = ptr.add((rows - line_h) * pixels_per_row);
-    let clear_n = line_h * pixels_per_row;
-    for i in 0..clear_n {
-        core::ptr::write_volatile(clear_start.add(i), BG_COLOR);
+    for i in 0..n64 {
+        let val = core::ptr::read_volatile(ptr64.add(src_start + i));
+        core::ptr::write_volatile(ptr64.add(i), val);
     }
 
-    CONSOLE.cursor_y -= CONSOLE.line_height;
+    let c64 = (BG as u64) | ((BG as u64) << 32);
+    let tail64 = ptr.add(tail_start) as *mut u64;
+    for i in 0..(line_pixels / 2) {
+        core::ptr::write_volatile(tail64.add(i), c64);
+    }
 
-    // Показать курсор (сохранить новый текст под ним, нарисовать крестик)
+    core::arch::asm!("dsb sy");
+
+    CONSOLE.cursor_y -= LINE_H;
+    mark_dirty(0, 0, FB_W, FB_H);
+
+    blink_draw(true);
+    BLINK_VISIBLE = true;
+    BLINK_LAST = crate::arch::aarch64::timer::tick_count();
+
     crate::gfx::cursor::show();
 
-    // Полный flush (весь экран сдвинулся)
-    DIRTY_X0 = 0;
-    DIRTY_Y0 = 0;
-    DIRTY_X1 = FB_WIDTH;
-    DIRTY_Y1 = FB_HEIGHT;
-    HAS_DIRTY = true;
+    core::arch::asm!("msr daifclr, #2");
 }

@@ -190,60 +190,31 @@ pub extern "C" fn kmain() -> ! {
         let height = 480u32;
 
         unsafe {
-            // 1. Нулим framebuffer
+            // Clear FB (front) — чтобы не мигало до первого present
             core::ptr::write_bytes(fb_addr as *mut u8, 0, (width * height * 4) as usize);
-
-            // 2. Создать resource + attach + scanout (КРИТИЧНО!)
             if !drivers::virtio::gpu::setup_framebuffer(&mut gpu, fb_addr, width, height) {
                 panic!("Framebuffer setup FAILED");
             }
             println!("Framebuffer setup OK");
+            drivers::virtio::gpu::set_global(gpu);
 
-            // 3. Инициализировать консоль (заполнит фон)
+            // W.1: back buffer init + консоль
             gfx::console::init();
 
-            // 4. Нарисовать заголовок
-            gfx::text::draw_string_wrap(10, 10, crate::version::CONSOLE_TITLE, 0x0000FF00, Some(0x00101010));
-            gfx::text::draw_string_wrap(10, 30, "", 0x00A0A0A0, Some(0x00101010));
-            gfx::console::console().cursor_y = 30;
-            gfx::console::console().cursor_x = 10;
+            // Печатаем баннер через консоль, чтобы курсор сдвинулся вниз
+            let banner = b"Kuberve Console v0.14.3\n\n";
+            for &b in banner {
+                gfx::console::putchar(b);
+            }
 
             gfx::shell::print_prompt();
 
-            // 5. Отправить на хост (TRANSFER + FLUSH)
-            if !drivers::virtio::gpu::flush(&mut gpu, width, height) {
-                println!("Initial flush FAILED");
-            }
-
-            // 6. Сохранить gpu глобально для клавиатуры
-            drivers::virtio::gpu::set_global(gpu);
+            // Present всё что накопилось
+            gfx::compositor::present_full();
+            gfx::cursor::show();
+            gfx::compositor::present_damage();
         }
         println!("Graphics ready");
-
-        // --- Windows demo ---
-        unsafe {
-            use gfx::wm;
-            wm::init();
-            // НЕпересекающиеся окна (x: 50-270 и 350-590)
-            wm::add_window(50,  200, 220, 140, "About", &[
-                "Kuberve v0.14.3",
-                "aarch64 OS with GUI",
-                "click title to drag",
-                "click X to close",
-            ]);
-            wm::add_window(350, 200, 240, 160, "System", &[
-                "IPC: Message (64B)",
-                "net: ARP/TCP/DHCP",
-                "fs:  NVMe + FAT32",
-                "gfx: virtio-gpu 2D",
-            ]);
-            println!("Windows opened");
-
-            // Явный flush, чтобы окна появились СРАЗУ
-            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                drivers::virtio::gpu::flush(gpu, 640, 480);
-            }
-        }
     } else {
         println!("virtio-gpu NOT FOUND");
     }
@@ -302,8 +273,6 @@ pub extern "C" fn kmain() -> ! {
     println!("Entering main loop...");
     let mut net_counter = 0u32;
     loop {
-        let mut need_flush = false;
-
         // 1. Keyboard — обработать все события, БЕЗ per-event flush
         if let Some(kbd) = kbd_opt.as_mut() {
             while let Some(ev) = unsafe { drivers::virtio::input::poll_events(kbd) } {
@@ -316,10 +285,8 @@ pub extern "C" fn kmain() -> ! {
                 if ev.value == 1 {
                     if ev.code == 14 {
                         unsafe { gfx::shell::backspace(); }
-                        need_flush = true;
                     } else if let Some(c) = drivers::virtio::input::keycode_to_ascii(ev.code, gfx::shell::shift()) {
                         unsafe { gfx::shell::input(c); }
-                        need_flush = true;
                     }
                 }
             }
@@ -349,82 +316,16 @@ pub extern "C" fn kmain() -> ! {
                 }
             }
 
-            // 1. Обновить позицию курсора (визуально)
-            // Позиция и флаг drag
-            let drag_active = unsafe { gfx::wm::wm().drag_idx.is_some() };
-
-            if moved && drag_active {
-                let (fx, fy, fw, fh) = unsafe { gfx::wm::drag_to(mx, my) };
-                if fw > 0 && fh > 0 {
-                    if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
-                        unsafe { drivers::virtio::gpu::flush_region(gpu, fx, fy, fw, fh); }
-                    }
-                }
-            } else if moved {
-                // Обычное движение курсора
-                let old_x = unsafe { gfx::cursor::MOUSE_X };
-                let old_y = unsafe { gfx::cursor::MOUSE_Y };
+            if moved {
                 let new_x = core::cmp::min(mx, 639);
                 let new_y = core::cmp::min(my, 479);
                 unsafe { gfx::cursor::move_to(new_x, new_y); }
-                if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
-                    let min_x = old_x.min(new_x).saturating_sub(3);
-                    let min_y = old_y.min(new_y).saturating_sub(3);
-                    let max_x = old_x.max(new_x) + 4;
-                    let max_y = old_y.max(new_y) + 4;
-                    let w = max_x.saturating_sub(min_x);
-                    let h = max_y.saturating_sub(min_y);
-                    unsafe { drivers::virtio::gpu::flush_region(gpu, min_x, min_y, w, h); }
-                }
             }
-
-            // 2. Кнопка вниз
-            if btn_down {
-                unsafe {
-                    let (cx, cy) = (gfx::cursor::MOUSE_X, gfx::cursor::MOUSE_Y);
-                    if let Some(idx) = gfx::wm::find_at(cx, cy) {
-                        if gfx::wm::hit_close(idx, cx, cy) {
-                            gfx::wm::close_window(idx);
-                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                                drivers::virtio::gpu::flush(gpu, 640, 480);
-                            }
-                        } else if gfx::wm::hit_title(idx, cx, cy) {
-                            gfx::wm::focus(idx);
-                            gfx::wm::start_drag(idx, cx, cy);
-                            // focus redraw делает 2 окна — flush весь экран
-                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                                drivers::virtio::gpu::flush(gpu, 640, 480);
-                            }
-                        } else {
-                            gfx::wm::focus(idx);
-                            if let Some(gpu) = drivers::virtio::gpu::get_global_mut() {
-                                drivers::virtio::gpu::flush(gpu, 640, 480);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 3. Кнопка вверх
-            if btn_up {
-                unsafe { gfx::wm::end_drag(); }
-            }
+            // btn_down / btn_up — заглушки на W.1 (WM будет в W.2)
+            let _ = (btn_down, btn_up);
         }
 
-        // 3. Flush текста
-        if need_flush {
-            unsafe { gfx::cursor::hide(); }   // восстановить пиксели под курсором
-            if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
-                unsafe { gfx::console::flush(gpu); }
-            }
-            unsafe { gfx::cursor::show(); }   // снова нарисовать поверх текста
-            if let Some(gpu) = unsafe { drivers::virtio::gpu::get_global_mut() } {
-                let (cx, cy, cw, ch) = gfx::cursor::dirty_rect();
-                unsafe { drivers::virtio::gpu::flush_region(gpu, cx, cy, cw, ch); }
-            }
-        }
-
-        // 4. Сеть — реже
+        // 3. Сеть — реже
         net_counter = net_counter.wrapping_add(1);
         if net_counter % 20 == 0 {
             if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
@@ -432,7 +333,9 @@ pub extern "C" fn kmain() -> ! {
             }
         }
 
-        // 5. wfe — проснуться на IRQ (таймер 100 Гц → 10 мс)
-        unsafe { core::arch::asm!("wfe") };
+        // 4. wfe — проснуться на IRQ (таймер 100 Гц → 10 мс)
+        unsafe { gfx::console::blink(); }
+        unsafe { gfx::compositor::present_damage(); }
+        unsafe { asm!("wfe"); }
     }
 }

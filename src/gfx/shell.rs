@@ -199,161 +199,129 @@ unsafe fn cmd_reboot() {
     puts(b"reboot not implemented (yet)\n");
 }
 
-// ============================================================
-// larpfetch (neofetch-style)
-// ============================================================
-
-unsafe fn fmt_u64(mut n: u64, buf: &mut [u8]) -> usize {
-    if n == 0 { buf[0] = b'0'; return 1; }
-    let mut tmp = [0u8; 20];
-    let mut i = 0;
-    while n > 0 { tmp[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
-    for j in 0..i { buf[j] = tmp[i - 1 - j]; }
-    i
-}
-
-unsafe fn fmt_ip(ip: [u8; 4], buf: &mut [u8]) -> usize {
-    let mut pos = 0usize;
-    for k in 0..4 {
-        let mut n = ip[k] as u64;
-        if n == 0 {
-            buf[pos] = b'0'; pos += 1;
-        } else {
-            let mut tmp = [0u8; 3];
-            let mut i = 0;
-            while n > 0 { tmp[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
-            while i > 0 { i -= 1; buf[pos] = tmp[i]; pos += 1; }
-        }
-        if k < 3 { buf[pos] = b'.'; pos += 1; }
-    }
-    pos
-}
-
-unsafe fn draw_kv(x: u32, y: u32, key: &str, val: &str, label_c: u32, val_c: u32) {
-    use crate::gfx::text;
-    text::draw_string(x, y, key, label_c, None);
-    text::draw_string(x + 80, y, val, val_c, None);
-}
-
 unsafe fn cmd_larpfetch() {
-    use crate::gfx::{console, text};
-    use crate::arch::aarch64::{phys, timer};
-    use crate::network::dhcp;
-
-    console::init();
-
-    let cyan    = 0x00FFFF00u32;
-    let green   = 0x0000FF00u32;
-    let white   = 0x00FFFFFFu32;
-    let yellow  = 0x0000FFFFu32;
-    let dim     = 0x00808080u32;
-
-    // === Logo: isometric cube with nerve pulse inside ===
-    // 15 chars wide, 7 lines tall
-    let art: [&str; 7] = [
-        "   +-----------+",
-        "  /           /|",
-        " +-----------+ |",
-        " |  _/\\_/\\_  | |",
-        " |           | +",
-        " |           |/",
-        " +-----------+",
-    ];
-    for (i, line) in art.iter().enumerate() {
-        text::draw_string(40, 70 + i as u32 * 16, line, cyan, None);
-    }
-
-    // "KUBERVE" wordmark под кубом
-    text::draw_string(40, 70 + 7 * 16 + 8, "  K U B E R V E", yellow, None);
-
-    // === Info panel ===
-    let mut y = 40u32;
-    text::draw_string(200, y, "user@kuberve", yellow, None);
-    y += 18;
-    text::draw_string(200, y, "-------------", yellow, None);
-    y += 20;
-
-    draw_kv(200, y, "OS:      ", crate::version::OS_VERSION, green, white);
-    y += 18;
-    draw_kv(200, y, "Kernel:  ", crate::version::KERNEL_NAME, green, white);
-    y += 18;
-
-    // Uptime
-    let ticks = timer::tick_count();
-    let secs = ticks / 100;
-    let mut up_buf = [0u8; 24];
-    let n = fmt_u64(secs, &mut up_buf);
-    up_buf[n] = b's';
-    let up_s = core::str::from_utf8(&up_buf[..n+1]).unwrap_or("?");
-    draw_kv(200, y, "Uptime:  ", up_s, green, white);
-    y += 18;
-
-    draw_kv(200, y, "Shell:   ", "kvsh", green, white);
-    y += 18;
-    draw_kv(200, y, "Res:     ", "640x480", green, white);
-    y += 18;
-
-    // Memory
-    let total = phys::total_pages();
-    let used = phys::used_pages();
-    let used_mb = (used as u64) * 4 / 1024;
-    let total_mb = (total as u64) * 4 / 1024;
-    let mut m1 = [0u8; 16]; let n1 = fmt_u64(used_mb, &mut m1);
-    let mut m2 = [0u8; 16]; let n2 = fmt_u64(total_mb, &mut m2);
-    let mut mem_buf = [0u8; 40];
-    let mut p = 0;
-    for &b in &m1[..n1] { mem_buf[p] = b; p += 1; }
-    for &b in b"MB / " { mem_buf[p] = b; p += 1; }
-    for &b in &m2[..n2] { mem_buf[p] = b; p += 1; }
-    for &b in b"MB" { mem_buf[p] = b; p += 1; }
-    let mem_s = core::str::from_utf8(&mem_buf[..p]).unwrap_or("?");
-    draw_kv(200, y, "Memory:  ", mem_s, green, white);
-    y += 18;
-
-    // IP
-    let ip = dhcp::our_ip();
-    let mut ip_buf = [0u8; 16];
-    let n = fmt_ip(ip, &mut ip_buf);
-    let ip_s = core::str::from_utf8(&ip_buf[..n]).unwrap_or("?");
-    draw_kv(200, y, "IP:      ", ip_s, green, white);
-    y += 18;
-
-    // Disk
-    if let Some(fs) = crate::fs::fat32::get() {
-        let total_bytes = (fs.total_sectors as u64) * (fs.bytes_per_sector as u64);
-        let total_mb = total_bytes / (1024 * 1024);
-        let mut d1 = [0u8; 16]; let n1 = fmt_u64(total_mb, &mut d1);
-        let mut disk_buf = [0u8; 32];
-        let mut p = 0;
-        for &b in &d1[..n1] { disk_buf[p] = b; p += 1; }
-        for &b in b" MB FAT32" { disk_buf[p] = b; p += 1; }
-        let disk_s = core::str::from_utf8(&disk_buf[..p]).unwrap_or("?");
-        draw_kv(200, y, "Disk:    ", disk_s, green, white);
-    }
-    y += 24;
-
-    // Palette: 8 colored blocks (16x16 px each)
-    let palette = [
-        0x00000000u32,  // black
-        0x000000FFu32,  // red
-        0x0000FF00u32,  // green
-        0x0000FFFFu32,  // yellow
-        0x00FF0000u32,  // blue
-        0x00FF00FFu32,  // magenta
-        0x00FFFF00u32,  // cyan
-        0x00FFFFFFu32,  // white
-    ];
-    let mut px = 200u32;
-    for &color in palette.iter() {
-        text::draw_string(px, y, "  ", color, Some(color));
-        px += 18;   // 16px block + 2px gap
-    }
-
-    // Cursor внизу
-    console::console().cursor_y = 460;
-    console::console().cursor_x = 10;
-
-    if let Some(gpu) = crate::drivers::virtio::gpu::get_global_mut() {
-        crate::drivers::virtio::gpu::flush(gpu, 640, 480);
-    }
+    puts(b"larpfetch: disabled in W.1 (WM rewrite in progress)\n");
 }
+
+// unsafe fn cmd_larpfetch() {
+//     use crate::gfx::{console, text};
+//     use crate::arch::aarch64::{phys, timer};
+//     use crate::network::dhcp;
+
+//     console::init();
+
+//     let cyan    = 0x00FFFF00u32;
+//     let green   = 0x0000FF00u32;
+//     let white   = 0x00FFFFFFu32;
+//     let yellow  = 0x0000FFFFu32;
+//     let dim     = 0x00808080u32;
+
+//     // === Logo: isometric cube with nerve pulse inside ===
+//     // 15 chars wide, 7 lines tall
+//     let art: [&str; 7] = [
+//         "   +-----------+",
+//         "  /           /|",
+//         " +-----------+ |",
+//         " |  _/\\_/\\_  | |",
+//         " |           | +",
+//         " |           |/",
+//         " +-----------+",
+//     ];
+//     for (i, line) in art.iter().enumerate() {
+//         text::draw_string(40, 70 + i as u32 * 16, line, cyan, None);
+//     }
+
+//     // "KUBERVE" wordmark под кубом
+//     text::draw_string(40, 70 + 7 * 16 + 8, "  K U B E R V E", yellow, None);
+
+//     // === Info panel ===
+//     let mut y = 40u32;
+//     text::draw_string(200, y, "user@kuberve", yellow, None);
+//     y += 18;
+//     text::draw_string(200, y, "-------------", yellow, None);
+//     y += 20;
+
+//     draw_kv(200, y, "OS:      ", crate::version::OS_VERSION, green, white);
+//     y += 18;
+//     draw_kv(200, y, "Kernel:  ", crate::version::KERNEL_NAME, green, white);
+//     y += 18;
+
+//     // Uptime
+//     let ticks = timer::tick_count();
+//     let secs = ticks / 100;
+//     let mut up_buf = [0u8; 24];
+//     let n = fmt_u64(secs, &mut up_buf);
+//     up_buf[n] = b's';
+//     let up_s = core::str::from_utf8(&up_buf[..n+1]).unwrap_or("?");
+//     draw_kv(200, y, "Uptime:  ", up_s, green, white);
+//     y += 18;
+
+//     draw_kv(200, y, "Shell:   ", "kvsh", green, white);
+//     y += 18;
+//     draw_kv(200, y, "Res:     ", "640x480", green, white);
+//     y += 18;
+
+//     // Memory
+//     let total = phys::total_pages();
+//     let used = phys::used_pages();
+//     let used_mb = (used as u64) * 4 / 1024;
+//     let total_mb = (total as u64) * 4 / 1024;
+//     let mut m1 = [0u8; 16]; let n1 = fmt_u64(used_mb, &mut m1);
+//     let mut m2 = [0u8; 16]; let n2 = fmt_u64(total_mb, &mut m2);
+//     let mut mem_buf = [0u8; 40];
+//     let mut p = 0;
+//     for &b in &m1[..n1] { mem_buf[p] = b; p += 1; }
+//     for &b in b"MB / " { mem_buf[p] = b; p += 1; }
+//     for &b in &m2[..n2] { mem_buf[p] = b; p += 1; }
+//     for &b in b"MB" { mem_buf[p] = b; p += 1; }
+//     let mem_s = core::str::from_utf8(&mem_buf[..p]).unwrap_or("?");
+//     draw_kv(200, y, "Memory:  ", mem_s, green, white);
+//     y += 18;
+
+//     // IP
+//     let ip = dhcp::our_ip();
+//     let mut ip_buf = [0u8; 16];
+//     let n = fmt_ip(ip, &mut ip_buf);
+//     let ip_s = core::str::from_utf8(&ip_buf[..n]).unwrap_or("?");
+//     draw_kv(200, y, "IP:      ", ip_s, green, white);
+//     y += 18;
+
+//     // Disk
+//     if let Some(fs) = crate::fs::fat32::get() {
+//         let total_bytes = (fs.total_sectors as u64) * (fs.bytes_per_sector as u64);
+//         let total_mb = total_bytes / (1024 * 1024);
+//         let mut d1 = [0u8; 16]; let n1 = fmt_u64(total_mb, &mut d1);
+//         let mut disk_buf = [0u8; 32];
+//         let mut p = 0;
+//         for &b in &d1[..n1] { disk_buf[p] = b; p += 1; }
+//         for &b in b" MB FAT32" { disk_buf[p] = b; p += 1; }
+//         let disk_s = core::str::from_utf8(&disk_buf[..p]).unwrap_or("?");
+//         draw_kv(200, y, "Disk:    ", disk_s, green, white);
+//     }
+//     y += 24;
+
+//     // Palette: 8 colored blocks (16x16 px each)
+//     let palette = [
+//         0x00000000u32,  // black
+//         0x000000FFu32,  // red
+//         0x0000FF00u32,  // green
+//         0x0000FFFFu32,  // yellow
+//         0x00FF0000u32,  // blue
+//         0x00FF00FFu32,  // magenta
+//         0x00FFFF00u32,  // cyan
+//         0x00FFFFFFu32,  // white
+//     ];
+//     let mut px = 200u32;
+//     for &color in palette.iter() {
+//         text::draw_string(px, y, "  ", color, Some(color));
+//         px += 18;   // 16px block + 2px gap
+//     }
+
+//     // Cursor внизу
+//     console::console().cursor_y = 460;
+//     console::console().cursor_x = 10;
+
+//     if let Some(gpu) = crate::drivers::virtio::gpu::get_global_mut() {
+//         crate::drivers::virtio::gpu::flush(gpu, 640, 480);
+//     }
+// }
