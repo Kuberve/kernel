@@ -1,5 +1,5 @@
 use crate::println;
-use crate::drivers::pci::{config_read32, config_write32, bar_size_mask, assign_bar64};
+use crate::drivers::pci::{config_read32, config_write32};
 use crate::arch::aarch64::phys;
 
 // ============================================================
@@ -126,8 +126,6 @@ pub unsafe fn setup_rx(vn: &VirtioNet) -> bool {
         avail.ring[i] = i as u16;
     }
     avail.idx = size as u16;
-    let avail = &*(avail_base as *const AvailPage);
-    let used = &*(vn.rx.used_pa as *const UsedPage);
 
     // 3. Memory barrier
     core::arch::asm!("dsb sy");
@@ -377,7 +375,6 @@ pub unsafe fn init() -> Option<VirtioNet> {
             let cap_dw1 = config_read32(bus, dev, func, (ptr + 4) as u16);
             let cap_id = cap_dw0 & 0xFF;
             let next = ((cap_dw0 >> 8) & 0xFF) as u8;
-            let cap_len = ((cap_dw0 >> 16) & 0xFF) as u8;
 
             if cap_id == 0x09 {
                 // Virtio PCI cap (Virtio 1.0 §4.1.4)

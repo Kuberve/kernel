@@ -136,11 +136,6 @@ pub unsafe fn spawn_el0(
     let caller_ttbr0: u64;
     asm!("mrs {}, TTBR0_EL1", out(reg) caller_ttbr0);
 
-    // Сохранить caller's TTBR0 (boot AS при вызове из kmain,
-    // init AS при вызове из sys_spawn SVC handler'а)
-    let caller_ttbr0: u64;
-    asm!("mrs {}, TTBR0_EL1", out(reg) caller_ttbr0);
-
     // КРИТИЧНО: activate(&BOOT_AS) перед create_as.
     //
     // phys::alloc_page() уже раздал ~285 страниц (NVMe, FAT32, virtio-net 256 RX,

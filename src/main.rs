@@ -6,6 +6,7 @@ extern crate alloc;
 
 use core::arch::{asm, global_asm};
 
+#[allow(special_module_name)]
 mod lib;
 
 mod arch;
@@ -190,26 +191,33 @@ pub extern "C" fn kmain() -> ! {
         let height = 480u32;
 
         unsafe {
-            // Clear FB (front) — чтобы не мигало до первого present
             core::ptr::write_bytes(fb_addr as *mut u8, 0, (width * height * 4) as usize);
             if !drivers::virtio::gpu::setup_framebuffer(&mut gpu, fb_addr, width, height) {
-                panic!("Framebuffer setup FAILED");
+                println!("Framebuffer setup FAILED, but continuing...");
             }
             println!("Framebuffer setup OK");
             drivers::virtio::gpu::set_global(gpu);
 
-            // W.1: back buffer init + консоль
-            gfx::console::init();
+            // Инициализация рабочего стола и создание окон
+            gfx::window::init_desktop();
+            
+            let id1 = gfx::window::create_window(100, 80, 320, 240, "Terminal");
+            
+            let win = &mut gfx::window::wm().windows[id1];
+            win.fill_rect(2, 22, 316, 216, gfx::window::COLOR_WIN_BG);
+            win.draw_text(10, 30, "Kuberve W.5", 0x000095DF); 
+            win.draw_text(10, 50, "Compositor is working.", 0x00FFFFFF); 
+            win.draw_text(10, 70, "We can draw text", 0x00AAAAAA); 
+            win.draw_text(10, 90, "inside windows now!", 0x00AAAAAA);
+            
+            win.cursor_x = 10;
+            win.cursor_y = 120; 
+            
+            win.blit_to_back();
 
-            // Печатаем баннер через консоль, чтобы курсор сдвинулся вниз
-            let banner = b"Kuberve Console v0.14.3\n\n";
-            for &b in banner {
-                gfx::console::putchar(b);
-            }
+            gfx::window::create_window(200, 150, 320, 240, "Window 2");
+            gfx::window::focus(1);
 
-            gfx::shell::print_prompt();
-
-            // Present всё что накопилось
             gfx::compositor::present_full();
             gfx::cursor::show();
             gfx::compositor::present_damage();
@@ -238,7 +246,7 @@ pub extern "C" fn kmain() -> ! {
     }
 
     // --- DHCP ---
-    if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
+    if let Some(vn) = drivers::virtio::net::get_global_mut() {
         unsafe { crate::network::dhcp::run(vn); }
     }
 
@@ -264,7 +272,7 @@ pub extern "C" fn kmain() -> ! {
         drivers::virtio::net::send_packet(vn, &arp);
     }
 
-    if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
+    if let Some(vn) = drivers::virtio::net::get_global_mut() {
         unsafe { send_arp(vn, [10, 0, 2, 2]); }   // gateway
         unsafe { send_arp(vn, [10, 0, 2, 3]); }   // DNS
     }
@@ -283,14 +291,20 @@ pub extern "C" fn kmain() -> ! {
                     continue;
                 }
                 if ev.value == 1 {
-                    if ev.code == 14 {
-                        unsafe { gfx::shell::backspace(); }
-                    } else if let Some(c) = drivers::virtio::input::keycode_to_ascii(ev.code, gfx::shell::shift()) {
-                        unsafe { gfx::shell::input(c); }
+                    if let Some(win_id) = unsafe { gfx::window::get_focused() } {
+                        let win = &mut gfx::window::wm().windows[win_id];
+                        unsafe { gfx::cursor::hide(); }
+                        if ev.code == 14 {
+                            win.put_char(8);
+                        } else if let Some(c) = drivers::virtio::input::keycode_to_ascii(ev.code, gfx::shell::shift()) {
+                            win.put_char(c);
+                        }
+                        unsafe { gfx::cursor::show(); }
                     }
                 }
             }
         }
+
 
         // 2. Mouse — coalesce, только последняя позиция
         if let Some(tablet) = tablet_opt.as_mut() {
@@ -316,25 +330,39 @@ pub extern "C" fn kmain() -> ! {
                 }
             }
 
+            // W.4: Drag and Drop
+            if btn_down {
+                if let Some(win_id) = unsafe { gfx::window::find_at(mx, my) } {
+                    unsafe { gfx::window::focus(win_id); }
+                    unsafe { gfx::window::start_drag(win_id, mx, my); }
+                }
+            }
+            
+            if btn_up {
+                unsafe { gfx::window::end_drag(); }
+            }
+
             if moved {
                 let new_x = core::cmp::min(mx, 639);
                 let new_y = core::cmp::min(my, 479);
                 unsafe { gfx::cursor::move_to(new_x, new_y); }
+                
+                // Если тащим — двигаем окно
+                if unsafe { gfx::window::is_dragging() } {
+                    unsafe { gfx::window::do_drag(new_x, new_y); }
+                }
             }
-            // btn_down / btn_up — заглушки на W.1 (WM будет в W.2)
-            let _ = (btn_down, btn_up);
         }
 
         // 3. Сеть — реже
         net_counter = net_counter.wrapping_add(1);
         if net_counter % 20 == 0 {
-            if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
+            if let Some(vn) = drivers::virtio::net::get_global_mut() {
                 let _ = unsafe { drivers::virtio::net::poll_rx(vn) };
             }
         }
 
         // 4. wfe — проснуться на IRQ (таймер 100 Гц → 10 мс)
-        unsafe { gfx::console::blink(); }
         unsafe { gfx::compositor::present_damage(); }
         unsafe { asm!("wfe"); }
     }

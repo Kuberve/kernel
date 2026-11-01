@@ -34,6 +34,7 @@ pub const SYS_MKDIR: u64 = sys_num::MKDIR;
 pub const SYS_UNLINK: u64 = sys_num::UNLINK;
 pub const SYS_RMDIR:  u64 = sys_num::RMDIR;
 pub const SYS_READDIR: u64 = sys_num::READDIR;
+pub const SYS_GUI_CREATE_WINDOW: u64 = sys_num::GUI_CREATE_WINDOW;
 
 /// Отдать CPU добровольно.
 #[allow(dead_code)]

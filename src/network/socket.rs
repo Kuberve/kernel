@@ -1,5 +1,3 @@
-use crate::println;
-
 pub const MAX_SOCKETS: usize = 8;
 pub const SOCKET_QUEUE: usize = 4;
 pub const SOCKET_PKT_MAX: usize = 1024;

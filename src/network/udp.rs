@@ -1,5 +1,3 @@
-use crate::network::ip::checksum;
-
 pub const UDP_HEADER_LEN: usize = 8;
 
 /// Построить UDP пакет. Возвращает полную длину (header + payload).

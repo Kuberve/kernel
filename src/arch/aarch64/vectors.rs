@@ -494,7 +494,7 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
                 return old_sp;
             }
 
-            let buf_pa = unsafe { core::ptr::addr_of_mut!(crate::SERVICE_ELF_BUF) as u64 };
+            let buf_pa = core::ptr::addr_of_mut!(crate::SERVICE_ELF_BUF) as u64;
             let n = match fs.read_file(cluster, size, buf_pa) {
                 Some(n) => n,
                 None => {
@@ -650,6 +650,39 @@ pub unsafe extern "C" fn rust_sync_handler(old_sp: u64) -> u64 {
             ctx.x0 = n as u64;
             old_sp
         }
+        syscall::SYS_GUI_CREATE_WINDOW => {
+            let a3 = ctx.x3;
+
+            let w = a0 as u32;
+            let h = a1 as u32;
+            let title_ptr = a2 as *const u8;
+            let title_len = a3 as usize;
+
+            let w = core::cmp::min(w, crate::gfx::window::MAX_WIN_W);
+            let h = core::cmp::min(h, crate::gfx::window::MAX_WIN_H);
+
+            // Читаем заголовок в локальный буфер на стеке ядра
+            let mut title_buf = [0u8; 32];
+            let copy_len = core::cmp::min(title_len, 31);
+            for i in 0..copy_len {
+                title_buf[i] = core::ptr::read_volatile(title_ptr.add(i));
+            }
+            let title_str = core::str::from_utf8(&title_buf[..copy_len]).unwrap_or("App");
+
+            // create_window теперь копирует строку в свой title_buf — 
+            // lifetime безопасен, стек не нужен после возврата
+            let id = unsafe { crate::gfx::window::create_window(50, 50, w, h, title_str) };
+
+            if id != usize::MAX {
+                unsafe { crate::gfx::window::focus(id); }
+                // present_full НЕ нужен: focus → redraw_all → blit_to_back → mark_dirty.
+                // Главный цикл (IDLE) вызовет present_damage() на следующей итерации.
+                ctx.x0 = id as u64;
+            } else {
+                ctx.x0 = u64::MAX;
+            }
+            old_sp
+        }
         syscall::SYS_EXIT => sched::exit(a0),
         _ => {
             crate::println!("unknown syscall {}", num);
@@ -738,7 +771,6 @@ pub unsafe extern "C" fn rust_irq_handler(old_sp: u64) -> u64 {
 }
 
 unsafe fn send_udp_raw(dst_ip: [u8; 4], dst_port: u16, src_port: u16, payload: &[u8]) -> i64 {
-    use crate::drivers::virtio::net;
     use crate::network::arp;
 
     let vn = match crate::drivers::virtio::net::get_global_mut() {

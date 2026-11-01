@@ -86,8 +86,6 @@ fn build_dhcp(msg_type: u8, requested_ip: Option<[u8;4]>, server_id: Option<[u8;
 
 /// Отправить DHCP через virtio-net. src_ip = 0.0.0.0, dst = broadcast.
 unsafe fn send_dhcp(vn: &mut crate::drivers::virtio::net::VirtioNet, buf: &[u8], len: usize) -> bool {
-    use crate::drivers::virtio::net;
-
     // UDP: src=68, dst=67
     let mut udp_buf = [0u8; 320];
     let udp_len = build_udp_packet(

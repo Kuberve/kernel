@@ -1,6 +1,5 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::arch::asm;
-use crate::println;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 static PERIOD_TICKS: AtomicU64 = AtomicU64::new(0);

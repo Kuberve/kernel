@@ -1,4 +1,3 @@
-use crate::network::ip::checksum;
 use crate::println;
 
 pub const TCP_HEADER_LEN: usize = 20;

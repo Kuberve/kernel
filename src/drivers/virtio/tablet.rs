@@ -73,7 +73,6 @@ pub unsafe fn init() -> Option<VirtioTablet> {
     let mut count = 0;
     while ptr != 0 && count < 20 {
         let cap_dw0 = config_read32(bus, dev, func, ptr as u16);
-        let cap_dw1 = config_read32(bus, dev, func, (ptr + 4) as u16);
         let cap_id = cap_dw0 & 0xFF;
         let next = ((cap_dw0 >> 8) & 0xFF) as u8;
         if cap_id == 0x09 {
