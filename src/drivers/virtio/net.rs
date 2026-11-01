@@ -158,7 +158,9 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
     core::arch::asm!("dsb sy");
 
     let mut count = 0u32;
-    while vn.rx.last_used_idx != used.idx {
+    loop {
+        let device_idx = core::ptr::read_volatile(&used.idx);
+        if vn.rx.last_used_idx == device_idx { break; }
         let idx = (vn.rx.last_used_idx as usize) % size;
         let elem = used.ring[idx];
         let desc_id = elem.id as usize;
@@ -249,87 +251,112 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
             }
         }
 
-        // Вернуть desc в avail ring
-        avail.ring[(avail.idx as usize) % size] = desc_id as u16;
-        avail.idx = avail.idx.wrapping_add(1);
+        core::ptr::write_volatile(&mut avail.idx, avail.idx.wrapping_add(1));
         vn.rx.last_used_idx = vn.rx.last_used_idx.wrapping_add(1);
         count += 1;
-
-        if count >= size as u32 { break; }  // safety
+        if count >= size as u32 { break; }
     }
-
     if count > 0 {
         core::arch::asm!("dsb sy");
-        notify_queue(vn, 0);   // снова сказать device "можешь писать"
+        notify_queue(vn, 0);
     }
     count
 }
 
 // ============================================================
-// TX setup and send
+// TX pool — 16 буферов по одной странице. Круговая очередь.
+// Все identity-mapped в .bss (0x41000000+), device видит их PA.
 // ============================================================
 
-static mut TX_BUF: [u8; 2048] = [0; 2048];
-static mut TX_DESC_IDX: u16 = 0;
+const NUM_TX_BUFS: usize = 16;
+
+static mut TX_BUFS: [[u8; 2048]; NUM_TX_BUFS] = [[0u8; 2048]; NUM_TX_BUFS];
+static mut TX_BUF_NEXT: usize = 0;
+
+/// Забрать следующий свободный TX-буфер. Возвращает PA (= VA, identity).
+unsafe fn alloc_tx_buf() -> *mut u8 {
+    let idx = TX_BUF_NEXT;
+    TX_BUF_NEXT = (TX_BUF_NEXT + 1) % NUM_TX_BUFS;
+    TX_BUFS[idx].as_mut_ptr()
+}
 
 /// Отправить Ethernet-фрейм (без virtio_net_hdr — QEMU без MRG_RXBUF и без VIRTIO_NET_F_CSUM).
 pub unsafe fn send_packet(vn: &mut VirtioNet, data: &[u8]) -> bool {
     if data.len() > 1500 { return false; }
 
+    // 1. Маскируем IRQ — защищаем TX ring от context switch mid-send.
+    //    Сохраняем/восстанавливаем состояние, чтобы не поломать syscall handler.
+    let daif: u64;
+    core::arch::asm!("mrs {}, daif", out(reg) daif);
+    core::arch::asm!("msr daifset, #2");
+
+    let ok = send_packet_locked(vn, data);
+
+    // 2. Восстанавливаем IRQ только если они были включены
+    if daif & (1 << 7) == 0 {   // I bit (IRQ mask) was clear
+        core::arch::asm!("msr daifclr, #2");
+    }
+
+    ok
+}
+
+unsafe fn send_packet_locked(vn: &mut VirtioNet, data: &[u8]) -> bool {
     let desc_base = vn.tx.desc_pa;
     let avail_base = vn.tx.avail_pa;
     let used_base = vn.tx.used_pa;
     let size = vn.tx.size as usize;
 
-    // Modern virtio: 12-byte virtio_net_hdr (всегда, даже без MRG_RXBUF)
-    const HDR_SIZE: usize = 12;
-    let buf_pa = &raw mut TX_BUF as *mut u8;
+    // Свежий буфер из пула (не переиспользуем TX_BUF)
+    let buf_pa = alloc_tx_buf();
 
-    // Zero header
+    // virtio_net_hdr: 12 нулевых байт
+    const HDR_SIZE: usize = 12;
     for i in 0..HDR_SIZE {
         core::ptr::write_volatile(buf_pa.add(i), 0);
     }
-    // Frame после header
     for i in 0..data.len() {
         core::ptr::write_volatile(buf_pa.add(HDR_SIZE + i), data[i]);
     }
-
     let total_len = HDR_SIZE + data.len();
 
-    // Заполнить desc[TX_DESC_IDX % size]
+    // Заполняем descriptor
     let desc_idx = (vn.tx.next_avail as usize) % size;
     let desc = &mut *((desc_base + (desc_idx * 16) as u64) as *mut VirtqDesc);
     desc.addr = buf_pa as u64;
     desc.len = total_len as u32;
-    desc.flags = 0;   // не WRITE (device читает из buf)
+    desc.flags = 0;
     desc.next = 0;
 
-    // Добавить в avail ring
+    // Avail ring
     let avail = &mut *(avail_base as *mut AvailPage);
     avail.ring[(vn.tx.next_avail as usize) % size] = desc_idx as u16;
     vn.tx.next_avail = vn.tx.next_avail.wrapping_add(1);
-    avail.idx = vn.tx.next_avail;
+    core::ptr::write_volatile(&mut avail.idx, vn.tx.next_avail);
 
-    // Memory barrier
+    core::arch::asm!("dsb sy");
+    notify_queue(vn, 1);
     core::arch::asm!("dsb sy");
 
-    // Notify TX (queue 1)
-    notify_queue(vn, 1);
-
-    // Polling used ring TX — ждать пока device прочитает
+    // Poll used ring. VOLATILE read критичен: device пишет снаружи,
+    // без volatile LLVM кеширует used.idx и получаем вечный цикл.
     let used = &mut *(used_base as *mut UsedPage);
     let mut timeout = 0u64;
-    while vn.tx.last_used_idx == used.idx {
+    loop {
+        let device_idx = core::ptr::read_volatile(&used.idx);
+        if vn.tx.last_used_idx != device_idx {
+            vn.tx.last_used_idx = device_idx;
+            return true;
+        }
         timeout += 1;
-        if timeout > 10_000_000 {
-            println!("virtio-net: TX timeout (used.idx={} last={})", used.idx, vn.tx.last_used_idx);
+        if timeout > 50_000_000 {
+            println!("virtio-net: TX timeout (used.idx={} last={})",
+                     core::ptr::read_volatile(&used.idx), vn.tx.last_used_idx);
             return false;
         }
-        core::arch::asm!("yield", options(nostack, nomem));
+        // Без options(nomem) — asm! по умолчанию может read/write memory,
+        // это заставляет LLVM не кешировать used.idx.
+        core::arch::asm!("yield");
     }
-    vn.tx.last_used_idx = used.idx;
-
-    true
 }
 
 pub unsafe fn init() -> Option<VirtioNet> {
