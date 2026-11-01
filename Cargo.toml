@@ -1,7 +1,12 @@
 [package]
 name = "kuberve"
-version = "0.14.3"
+version = "0.14.4"
 edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Kuberve/kernel"
+authors = ["Simonov Zakhar <zaharsimonov6087@gmail.com> (BlackZakha)"]
+description = "Kuberve OS kernel — aarch64, no_std, microkernel-inspired"
+readme = "README.md"
 
 [[bin]]
 name = "kuberve"
@@ -16,4 +21,4 @@ panic = "abort"
 opt-level = 2
 
 [dependencies]
-kuberve-abi = { path = "../abi" }
+kuberve-abi = { git = "https://github.com/Kuberve/abi" }
