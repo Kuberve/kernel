@@ -1,5 +1,3 @@
-ENTRY(_start)
-
 SECTIONS
 {
     . = 0x40000000;
@@ -13,6 +11,9 @@ SECTIONS
 
     .rodata : { *(.rodata .rodata.*) }
     .data   : { *(.data .data.*) }
+    
+    . = 0x41000000;
+    
     .bss    : { *(.bss .bss.*) *(COMMON) }
 
     . = ALIGN(16);

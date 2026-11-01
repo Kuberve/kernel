@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [profile.dev]
 panic = "abort"
-opt-level = 0
+opt-level = 2
 
 [profile.release]
 panic = "abort"
