@@ -242,6 +242,8 @@ pub unsafe fn poll_rx(vn: &mut VirtioNet) -> u32 {
                                             pkt.data[..n].copy_from_slice(&payload[payload_start..payload_start + n]);
                                             pkt.len = n as u16;
                                         }
+                                        // Передаём в очередь сокета. Без этого пакет просто теряется.
+                                        let _ = crate::network::socket::enqueue(sid, pkt);
                                     }
                                 }
                             }

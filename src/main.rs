@@ -2,11 +2,28 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 
+// no_std с mutable static — архитектурное решение:
+// WM, THREADS, QUEUES, драйверы живут в .bss, доступ через &mut.
+// Для pre-alpha это норма, Rust 2024 warning игнорируем.
+#![allow(static_mut_refs)]
+
+// Pre-alpha: множество модулей написаны «на будущее»
+// (console/shell — вернутся как GUI Terminal в v0.18.5,
+//  ping/icmp — до production network в v0.17,
+//  часть NVMe/PCI утилит — до multi-device).
+// Запрещать dead_code сейчас дороже, чем польза от сигнала.
+// TODO перед v1.0: убрать этот allow и почистить реально мёртвый код.
+#![allow(dead_code)]
+
+// mod lib есть в src/lib.rs — это внутренний модуль ядра
+// (allocator, loader, panic), не Rust-library crate.
+// Имя "lib" особое, но мы используем его намеренно.
+#![allow(special_module_name)]
+
 extern crate alloc;
 
 use core::arch::{asm, global_asm};
 
-#[allow(special_module_name)]
 mod lib;
 
 mod arch;
