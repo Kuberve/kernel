@@ -10,4 +10,6 @@ pub mod shell;
 
 pub mod compositor;
 
+pub mod window;
+
 //pub mod wm;

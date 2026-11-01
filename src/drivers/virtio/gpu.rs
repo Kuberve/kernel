@@ -293,8 +293,8 @@ unsafe fn send_cmd(gpu: &mut VirtioGpu, cmd: &[u8], resp: &mut [u8]) -> bool {
     let mut timeout = 0u64;
     while q.last_used_idx == used.idx {
         timeout += 1;
-        if timeout > 10_000_000 { return false; }
-        core::arch::asm!("yield", options(nostack, nomem));
+        if timeout > 100_000_000 { return false; }
+        core::arch::asm!("wfe"); // <-- Ждём IRQ, отдаём время QEMU
     }
     q.last_used_idx = used.idx;
 
