@@ -1,2 +1,9 @@
-/target
+/target/
 *.img
+*.iso
+*.bin
+nvme.img
+.DS_Store
+.vscode/
+.idea/
+*.swp
