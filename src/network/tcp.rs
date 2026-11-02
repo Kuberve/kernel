@@ -505,16 +505,31 @@ pub unsafe fn active_connection() -> Option<usize> {
 }
 
 pub unsafe fn find_by_fd(fd: i64) -> Option<usize> {
+    let mut fallback = None;
     for i in 0..MAX_TCP_CONNS {
         if CONNS[i].used && CONNS[i].fd == fd {
-            return Some(i);
+            match CONNS[i].state {
+                TcpState::Established | TcpState::CloseWait => return Some(i),
+                _ => fallback = Some(i),
+            }
         }
     }
-    None
+    fallback
 }
 
 pub unsafe fn connect(fd: i64, dst_ip: [u8; 4], dst_port: u16) -> i64 {
     use crate::arch::aarch64::sched;
+
+    // Free stale slots holding this fd. When a previous connection was
+    // closed via sys_close (FIN sent, now FinWait1/FinWait2), the TCP
+    // slot keeps fd value but fd table entry is freed. Next sys_socket
+    // reuses the same fd, and find_by_fd returns the OLD slot — send
+    // then fails because state != Established.
+    for i in 0..MAX_TCP_CONNS {
+        if CONNS[i].used && CONNS[i].fd == fd {
+            CONNS[i] = EMPTY_TCP_CONN;
+        }
+    }
 
     let slot = match alloc_slot() {
         Some(s) => s,
