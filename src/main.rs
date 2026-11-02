@@ -373,8 +373,8 @@ pub extern "C" fn kmain() -> ! {
 
         // 3. Сеть — реже
         net_counter = net_counter.wrapping_add(1);
-        if net_counter % 20 == 0 {
-            if let Some(vn) = drivers::virtio::net::get_global_mut() {
+        if net_counter % 2 == 0 {
+            if let Some(vn) = unsafe { drivers::virtio::net::get_global_mut() } {
                 let _ = unsafe { drivers::virtio::net::poll_rx(vn) };
             }
         }

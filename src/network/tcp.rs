@@ -415,8 +415,12 @@ pub unsafe fn handle_incoming(
                         c.local_seq = c.local_seq.wrapping_add(1);
                         c.state = TcpState::LastAck;
                     } else {
-                        c.state = TcpState::Closed;
-                        println!("TCP client: server FIN, closed");
+                        // Client received FIN. Send ACK, transition to CloseWait.
+                        // Data may still be in rx_buf; app reads it before sys_close().
+                        send_tcp_segment(src_ip, h.src_port, h.dst_port,
+                            c.local_seq, c.remote_seq, FLAG_ACK, 65535, &[]);
+                        c.state = TcpState::CloseWait;
+                        println!("TCP client: server FIN, CloseWait");
                     }
                 }
 
@@ -517,7 +521,7 @@ pub unsafe fn connect(fd: i64, dst_ip: [u8; 4], dst_port: u16) -> i64 {
         None => return -1,
     };
     let our_isn = gen_isn();
-    let our_port = 49152u16.wrapping_add((slot as u16) * 17);
+    let our_port = 49152u16.wrapping_add((our_isn as u16) % 16384);
 
     {
         let c = get_mut(slot).unwrap();
@@ -543,11 +547,9 @@ pub unsafe fn connect(fd: i64, dst_ip: [u8; 4], dst_port: u16) -> i64 {
     }
 
     for _ in 0..10 {
-        sched::sleep(1);
+        sched::sleep(crate::arch::aarch64::timer::TICK_HZ / 4);
         let c = get(slot).unwrap();
-        if c.saw_syn_ack {
-            return slot as i64;  // успех: SYN-ACK получен
-        }
+        if c.saw_syn_ack { return slot as i64; }
     }
     println!("TCP client: connect timeout");
     get_mut(slot).unwrap().used = false;
